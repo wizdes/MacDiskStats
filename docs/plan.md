@@ -151,3 +151,8 @@ Approving this plan approves these outward steps at M7:
 - **Name:** Cushion, after the map's shading. "Acreage" is already a Mac disk app. My search found no Mac app named Cushion, but it was a quick check. Tell me if you want another name; changing it is cheap before M7.
 - **License:** MIT.
 - **Minimum macOS:** 15.
+
+## Changes after approval (2026-11-04, user instructions)
+
+- **Main thread only coordinates.** Sol builds everything through the runner. Astra does all reviews and design critique. No native Opus builders or reviewers, to save Claude tokens.
+- **No SwiftPM or Xcode.** Neither runs in the runner's sandbox; plain `swiftc` does (tested). `scripts/build.sh` calls `swiftc`, assembles the `.app`, and signs it. Tests are a small `checks` executable, not XCTest. Root runs only what the sandbox cannot: whole-disk measures, signing, release.
