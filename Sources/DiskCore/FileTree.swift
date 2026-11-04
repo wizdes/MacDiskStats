@@ -1,0 +1,99 @@
+import Foundation
+
+public struct NodeFlags: OptionSet, Sendable {
+    public let rawValue: UInt16
+    public init(rawValue: UInt16) { self.rawValue = rawValue }
+    public static let isDir = Self(rawValue: 1)
+    public static let unreadable = Self(rawValue: 2)
+    public static let hardlinkDup = Self(rawValue: 4)
+    public static let cloneShared = Self(rawValue: 8)
+    public static let mountPointStopped = Self(rawValue: 16)
+    public static let symlink = Self(rawValue: 32)
+}
+
+public struct ExtensionTotal: Sendable {
+    public let name: String
+    public let bytes: Int64
+    public let files: Int64
+}
+
+// Parallel arrays keep node storage compact. IDs and child spans stay stable after scan().
+public struct FileTree: Sendable {
+    public let rootPath: String
+    public let parent: [Int32]
+    public let firstChild: [Int32]
+    public let childCount: [Int32]
+    public let countedSize: [Int64]
+    public let privateSize: [Int64]
+    public let logicalSize: [Int64]
+    public let fileCount: [Int64]
+    public let modTime: [Int64]
+    public let extensionIndex: [Int32]
+    public let flags: [NodeFlags]
+    public let nameOffset: [Int32]
+    public let nameLength: [Int32]
+    public let names: [UInt8]
+    public let children: [Int32]
+    public let extensions: [ExtensionTotal]
+    public let unreadablePaths: [String]
+    public let limitations: [String]
+    public let volumeUsedBytes: Int64
+    public let filesSeen: Int64
+    public let dirsSeen: Int64
+    public let largestFiles: [Int32]
+
+    public func path(of id: Int32) -> String {
+        if id == 0 { return rootPath }
+        var parts: [String] = []
+        var at = id
+        while at > 0 {
+            let n = Int(at)
+            let a = Int(nameOffset[n]), b = a + Int(nameLength[n])
+            parts.append(String(decoding: names[a..<b], as: UTF8.self))
+            at = parent[n]
+        }
+        return (rootPath == "/" ? "" : rootPath) + "/" + parts.reversed().joined(separator: "/")
+    }
+
+    public func topFiles(limit: Int) -> [Int32] {
+        guard limit > 0 else { return [] }
+        if limit <= largestFiles.count { return Array(largestFiles.prefix(limit)) }
+        var heap: [Int32] = []
+        func siftDown(_ start: Int) {
+            var p = start
+            while 2 * p + 1 < heap.count {
+                var c = 2 * p + 1
+                if c + 1 < heap.count && countedSize[Int(heap[c + 1])] < countedSize[Int(heap[c])] { c += 1 }
+                if countedSize[Int(heap[p])] <= countedSize[Int(heap[c])] { break }
+                heap.swapAt(p, c); p = c
+            }
+        }
+        for n in parent.indices where !flags[n].contains(.isDir) {
+            let id = Int32(n)
+            if heap.count < limit {
+                heap.append(id)
+                var p = heap.count - 1
+                while p > 0 && countedSize[Int(heap[p])] < countedSize[Int(heap[(p - 1) / 2])] {
+                    heap.swapAt(p, (p - 1) / 2); p = (p - 1) / 2
+                }
+            } else if countedSize[n] > countedSize[Int(heap[0])] {
+                heap[0] = id; siftDown(0)
+            }
+        }
+        return heap.sorted { countedSize[Int($0)] > countedSize[Int($1)] }
+    }
+}
+
+public struct ScanOptions: Sendable {
+    public var workers: Int
+    public var includePrivateSize: Bool
+    public init(workers: Int = 8, includePrivateSize: Bool = true) {
+        self.workers = max(1, min(workers, 32)); self.includePrivateSize = includePrivateSize
+    }
+}
+
+public struct ScanProgress: Sendable {
+    public let filesSeen: Int64
+    public let bytesCounted: Int64
+    public let firstTwoLevels: [(path: String, bytes: Int64)]
+}
