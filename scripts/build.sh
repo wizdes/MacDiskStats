@@ -14,5 +14,6 @@ if [[ "$mode" == release ]]; then opt=(-O -wmo); else opt=(-Onone -g -wmo); fi
 swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -parse-as-library -emit-module -emit-object -module-name DiskCore Sources/DiskCore/*.swift -emit-module-path "$out/DiskCore.swiftmodule" -o "$out/DiskCore.o"
 libtool -static -o "$out/libDiskCore.a" "$out/DiskCore.o"
 swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Sources/cushion-bench/*.swift "$out/libDiskCore.a" -o "$out/cushion-bench"
+swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Tools/cushion-map/*.swift "$out/libDiskCore.a" -o "$out/cushion-map"
 swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Tests/checks/*.swift "$out/libDiskCore.a" -o "$out/checks"
 echo "build $mode: $((SECONDS-start)) seconds"

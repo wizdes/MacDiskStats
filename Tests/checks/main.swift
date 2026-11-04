@@ -75,5 +75,52 @@ do {
     check("scan leaves names sizes dates unchanged", same)
 } catch { failures += 1; print("FAIL read-only setup: \(error)") }
 
+do {
+    let dir = base.appendingPathComponent("map"); try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    for (name, size) in [("a.txt", 500_000), ("b.png", 300_000), ("c.pdf", 200_000)] { try file(dir.appendingPathComponent(name), bytes: size) }
+    let mapTree = try await scan("map")
+    let map = Treemap.layout(tree: mapTree, rootNode: 0, widthPx: 100, heightPx: 100)
+    let ids = Array(mapTree.children.prefix(3))
+    let leafAreas = ids.compactMap { map.rect(of: $0) }.map { $0.width * $0.height }
+    let inside = ids.allSatisfy { id -> Bool in
+        guard let r = map.rect(of: id) else { return false }
+        return r.x >= 0 && r.y >= 0 && r.x + r.width <= 100 && r.y + r.height <= 100
+    }
+    check("bug: layout overflow; leaf areas cover map and stay inside", abs(leafAreas.reduce(0, +) - 10_000) <= 100 && inside)
+    let proportional = zip(leafAreas, ids).allSatisfy { area, id in abs(Double(area) / 10_000 - Double(mapTree.countedSize[Int(id)]) / Double(mapTree.countedSize[0])) <= 0.1 }
+    check("bug: wrong squarify scale; large areas track size", proportional)
+    let centersHit = ids.allSatisfy { id -> Bool in
+        guard let r = map.rect(of: id) else { return false }
+        return map.hitTest(x: r.x + r.width / 2, y: r.y + r.height / 2) == id
+    }
+    check("bug: grid lookup off by one; center hits its box", centersHit)
+} catch { failures += 1; print("FAIL map setup: \(error)") }
+
+do {
+    let dir = base.appendingPathComponent("map-type"), many = dir.appendingPathComponent("many")
+    try fm.createDirectory(at: many, withIntermediateDirectories: true)
+    for i in 0..<6 { try file(many.appendingPathComponent("\(i).png"), bytes: 10_000) }
+    try file(dir.appendingPathComponent("largest.txt"), bytes: 50_000)
+    let tree = try await scan("map-type")
+    let map = Treemap.layout(tree: tree, rootNode: 0, widthPx: 1, heightPx: 1)
+    let type = tree.extensions.firstIndex(where: { $0.name == "txt" })
+    check("bug: collapsed folder uses largest file type", type != nil && map.colorIndex.first == Int32(type!))
+} catch { failures += 1; print("FAIL map type setup: \(error)") }
+
+func dfUsed(_ path: String) throws -> Int64 {
+    let p = Process(), pipe = Pipe()
+    p.executableURL = URL(fileURLWithPath: "/bin/df"); p.arguments = ["-k", path]; p.standardOutput = pipe
+    try p.run(); let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+    let rows = String(decoding: data, as: UTF8.self).split(separator: "\n")
+    guard p.terminationStatus == 0, rows.count >= 2 else { throw NSError(domain: "df", code: 1) }
+    let columns = rows[1].split(whereSeparator: \.isWhitespace)
+    guard columns.count >= 3, let used = Int64(columns[2]) else { throw NSError(domain: "df", code: 2) }
+    return used * 1024
+}
+do {
+    let expected = try dfUsed("/") + dfUsed("/System/Volumes/Data")
+    check("bug: APFS container use exceeds root and Data volumes", abs(Scanner.volumeUsedBytes(root: "/") - expected) < 16_000_000)
+} catch { failures += 1; print("FAIL df setup: \(error)") }
+
 print("checks \(checks), failed \(failures)")
 exit(failures == 0 ? 0 : 1)

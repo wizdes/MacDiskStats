@@ -29,6 +29,7 @@ public struct FileTree: Sendable {
     public let fileCount: [Int64]
     public let modTime: [Int64]
     public let extensionIndex: [Int32]
+    public let largestFileType: [Int32]
     public let flags: [NodeFlags]
     public let nameOffset: [Int32]
     public let nameLength: [Int32]
@@ -87,7 +88,7 @@ public struct FileTree: Sendable {
 public struct ScanOptions: Sendable {
     public var workers: Int
     public var includePrivateSize: Bool
-    public init(workers: Int = 8, includePrivateSize: Bool = true) {
+    public init(workers: Int = 16, includePrivateSize: Bool = true) {
         self.workers = max(1, min(workers, 32)); self.includePrivateSize = includePrivateSize
     }
 }

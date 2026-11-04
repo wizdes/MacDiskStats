@@ -46,6 +46,12 @@ private final class State: @unchecked Sendable {
     var offsets: [Int32] = [0]
     var lengths: [Int32] = [0]
     var names: [UInt8] = []
+    var levelOne: [Int32] = [-1]
+    var levelTwo: [Int32] = [-1]
+    var progressTick = 0
+    var extensionIDs: [Int32] = [-1]
+    var extensionBytes: [[UInt8]] = []
+    var extensionHashes: [UInt64: [Int32]] = [:]
     var unreadable: [Int32] = []
     var limitations = Set<String>()
     var seenDirs = Set<Key>()
@@ -58,14 +64,39 @@ private final class State: @unchecked Sendable {
     let links = Shards()
     let clones = Shards()
     let rootPath: String
+    let rootFD: Int32
     let rootDevice: UInt64
     let dataDevice: UInt64
     let volumeUsed: Int64
     let options: ScanOptions
-    init(path: String, device: UInt64, dataDevice: UInt64, inode: UInt64, volumeUsed: Int64, options: ScanOptions, progress: (@Sendable (ScanProgress) -> Void)?) {
-        rootPath = path; rootDevice = device; self.dataDevice = dataDevice; self.volumeUsed = volumeUsed; self.options = options; self.progress = progress
+    init(path: String, fd: Int32, device: UInt64, dataDevice: UInt64, inode: UInt64, volumeUsed: Int64, options: ScanOptions, progress: (@Sendable (ScanProgress) -> Void)?) {
+        rootPath = path; rootFD = fd; rootDevice = device; self.dataDevice = dataDevice; self.volumeUsed = volumeUsed; self.options = options; self.progress = progress
         if !options.includePrivateSize { limitations.insert("private and clone attributes disabled; shared clone bytes may be counted twice") }
-        seenDirs.insert(Key(device: device, inode: inode)); openedDirs.insert(Key(device: device, inode: inode)); queue = [Job(id: 0, path: path)]
+        seenDirs.insert(Key(device: device, inode: inode)); openedDirs.insert(Key(device: device, inode: inode)); queue = [Job(id: 0, path: ".")]
+    }
+    deinit { close(rootFD) }
+    private func internExtension(_ name: UnsafeRawBufferPointer) -> Int32 {
+        var dot = -1
+        for i in name.indices where name[i] == 46 { dot = i }
+        let start = dot < 0 ? name.count : dot + 1
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for i in start..<name.count {
+            let c = name[i], lower = c >= 65 && c <= 90 ? c + 32 : c
+            hash = (hash ^ UInt64(lower)) &* 1_099_511_628_211
+        }
+        for id in extensionHashes[hash] ?? [] {
+            let bytes = extensionBytes[Int(id)]
+            if bytes.count == name.count - start && bytes.indices.allSatisfy({ j in
+                let c = name[start + j]
+                return bytes[j] == (c >= 65 && c <= 90 ? c + 32 : c)
+            }) { return id }
+        }
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(name.count - start)
+        for i in start..<name.count { let c = name[i]; bytes.append(c >= 65 && c <= 90 ? c + 32 : c) }
+        let id = Int32(extensionBytes.count)
+        extensionBytes.append(bytes); extensionHashes[hash, default: []].append(id)
+        return id
     }
     func next() -> Job? {
         lock.lock(); defer { lock.unlock() }
@@ -101,14 +132,17 @@ private final class State: @unchecked Sendable {
         logical.append(isDir ? 0 : max(0, e.logical)); files.append(isDir ? 0 : 1)
         mod.append(e.mod); flags.append(f)
         offsets.append(Int32(names.count)); lengths.append(Int32(e.name.count)); names.append(contentsOf: e.name)
+        extensionIDs.append(isDir ? -1 : internExtension(e.name))
+        if p == 0 { levelOne.append(isDir ? id : -1); levelTwo.append(-1) }
+        else {
+            levelOne.append(levelOne[Int(p)])
+            levelTwo.append(self.parent[Int(p)] == 0 && isDir ? id : levelTwo[Int(p)])
+        }
         runningBytes += size
         if size > 0 {
-            var ancestor = p
-            while ancestor > 0 {
-                let upper = self.parent[Int(ancestor)]
-                if upper == 0 || (upper > 0 && self.parent[Int(upper)] == 0) { levelBytes[ancestor, default: 0] += size }
-                ancestor = upper
-            }
+            let one = levelOne[Int(p)], two = levelTwo[Int(p)]
+            if one >= 0 { levelBytes[one, default: 0] += size }
+            if two >= 0 { levelBytes[two, default: 0] += size }
         }
         if isDir {
             dirsSeen += 1
@@ -118,10 +152,11 @@ private final class State: @unchecked Sendable {
             else if path == "System/Volumes/Data" && rootPath == "/" { flags[Int(id)].insert(.mountPointStopped) }
             else if (e.mount != 0 || !sameVolume) && !firmlink { flags[Int(id)].insert(.mountPointStopped) }
             else if !seenDirs.insert(key).inserted { flags[Int(id)].insert(.mountPointStopped) }
-            else { queue.append(Job(id: id, path: (rootPath == "/" ? "" : rootPath) + "/" + path)); lock.broadcast() }
+            else { queue.append(Job(id: id, path: path)); lock.broadcast() }
         } else { filesSeen += 1 }
-        let now = Date()
-        if now.timeIntervalSince(lastProgress) >= 0.25 {
+        progressTick += 1
+        if progressTick & 4095 == 0, Date().timeIntervalSince(lastProgress) >= 0.25 {
+            let now = Date()
             lastProgress = now
             let totals = levelBytes.map { (path: relativePath($0.key), bytes: $0.value) }
             let info = ScanProgress(filesSeen: filesSeen, bytesCounted: runningBytes, firstTwoLevels: totals)
@@ -159,16 +194,15 @@ public enum Scanner {
         guard fd >= 0 else { throw ScanError.cannotOpen(normalized, errno) }
         var st = stat(); var fs = statfs()
         guard fstat(fd, &st) == 0 else { let e = errno; close(fd); throw ScanError.cannotOpen(normalized, e) }
-        _ = fstatfs(fd, &fs); close(fd)
-        // `/` exposes Data through firmlinks; use Data's used-space figure for its gap.
+        _ = fstatfs(fd, &fs)
         var dataDevice = UInt64(st.st_dev)
         if normalized == "/" {
             var dataStat = stat()
             if stat("/System/Volumes/Data", &dataStat) == 0 { dataDevice = UInt64(dataStat.st_dev) }
-            _ = statfs("/System/Volumes/Data", &fs)
         }
-        let used = Int64(fs.f_blocks - fs.f_bfree) * Int64(fs.f_bsize)
-        let state = State(path: normalized, device: UInt64(st.st_dev), dataDevice: dataDevice, inode: st.st_ino, volumeUsed: used, options: options, progress: progress)
+        let used = volumeUsedBytes(root: normalized)
+        guard used > 0 else { close(fd); throw ScanError.cannotOpen(normalized, EIO) }
+        let state = State(path: normalized, fd: fd, device: UInt64(st.st_dev), dataDevice: dataDevice, inode: st.st_ino, volumeUsed: used, options: options, progress: progress)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let group = DispatchGroup()
@@ -193,10 +227,24 @@ public enum Scanner {
             state.lock.lock(); state.cancelled = true; state.lock.broadcast(); state.lock.unlock()
         }
     }
+    public static func volumeUsedBytes(root: String) -> Int64 {
+        func usedOnVolume(_ path: String) -> Int64? {
+            var attrs = attrlist()
+            attrs.bitmapcount = UInt16(ATTR_BIT_MAP_COUNT)
+            attrs.volattr = UInt32(ATTR_VOL_INFO) | UInt32(ATTR_VOL_SPACEUSED)
+            var record = [UInt8](repeating: 0, count: 12)
+            let status = record.withUnsafeMutableBytes { raw in getattrlist(path, &attrs, raw.baseAddress, raw.count, 0) }
+            guard status == 0 else { return nil }
+            return record.withUnsafeBytes { Int64(bitPattern: $0.loadUnaligned(fromByteOffset: 4, as: UInt64.self)) }
+        }
+        var used = usedOnVolume(root) ?? 0
+        if root == "/" { used += usedOnVolume("/System/Volumes/Data") ?? 0 }
+        return used
+    }
 }
 
 private func scanDirectory(_ job: Job, _ s: State, _ buffer: inout [UInt8]) {
-    let fd = open(job.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    let fd = openat(s.rootFD, job.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
     if fd < 0 { s.markUnreadable(job.id); return }
     defer { close(fd) }
     var st = stat(); if fstat(fd, &st) != 0 { s.markUnreadable(job.id); return }
@@ -268,7 +316,7 @@ private func parseRecords(_ bytes: [UInt8], count: Int, parent: Job, state s: St
                 let relative: String
                 if e.type == UInt32(VDIR.rawValue) {
                     let name = String(decoding: e.name, as: UTF8.self)
-                    relative = parent.id == 0 ? name : String(parent.path.dropFirst(s.rootPath == "/" ? 1 : s.rootPath.count + 1)) + "/" + name
+                    relative = parent.id == 0 ? name : parent.path + "/" + name
                 } else { relative = "" }
                 s.add(e, parent: parent.id, path: relative)
             }
@@ -290,7 +338,7 @@ private func fallback(_ fd: Int32, _ job: Job, _ s: State) {
             e.device = UInt64(st.st_dev); e.inode = st.st_ino; e.links = UInt32(st.st_nlink)
             e.type = (st.st_mode & S_IFMT) == S_IFDIR ? UInt32(VDIR.rawValue) : ((st.st_mode & S_IFMT) == S_IFLNK ? UInt32(VLNK.rawValue) : UInt32(VREG.rawValue))
             e.allocated = Int64(st.st_blocks) * 512; e.logical = st.st_size; e.mod = Int64(st.st_mtimespec.tv_sec)
-            let relative = e.type == UInt32(VDIR.rawValue) ? (job.id == 0 ? name : String(job.path.dropFirst(s.rootPath == "/" ? 1 : s.rootPath.count + 1)) + "/" + name) : ""
+            let relative = e.type == UInt32(VDIR.rawValue) ? (job.id == 0 ? name : job.path + "/" + name) : ""
             s.add(e, parent: job.id, path: relative)
         }
     }
@@ -302,8 +350,15 @@ private func finish(_ s: State) -> FileTree {
     for i in 1..<n { childLists[Int(s.parent[i])].append(Int32(i)) }
     var order: [Int32] = [0], idx = 0
     while idx < order.count { order.append(contentsOf: childLists[Int(order[idx])]); idx += 1 }
+    var largestNode = [Int32](repeating: -1, count: n)
     for id in order.reversed() where id != 0 {
         let p = Int(s.parent[Int(id)])
+        if !s.flags[Int(id)].contains(.isDir) { largestNode[Int(id)] = id }
+        let candidate = s.flags[Int(id)].contains(.isDir) ? largestNode[Int(id)] : id
+        if candidate >= 0 {
+            let old = largestNode[p]
+            if old < 0 || s.counted[Int(candidate)] > s.counted[Int(old)] { largestNode[p] = candidate }
+        }
         s.counted[p] += s.counted[Int(id)]; s.priv[p] += s.priv[Int(id)]
         s.logical[p] += s.logical[Int(id)]; s.files[p] += s.files[Int(id)]
     }
@@ -313,21 +368,20 @@ private func finish(_ s: State) -> FileTree {
         first[i] = Int32(children.count); counts[i] = Int32(childLists[i].count)
         children.append(contentsOf: childLists[i])
     }
-    var extMap: [String: (Int64, Int64)] = [:]
-    var keys = Array(repeating: "", count: n)
-    for i in 1..<n where !s.flags[i].contains(.isDir) {
-        let name = String(decoding: s.names[Int(s.offsets[i])..<(Int(s.offsets[i]) + Int(s.lengths[i]))], as: UTF8.self)
-        let ext = name.lastIndex(of: ".").map { String(name[name.index(after: $0)...]).lowercased() } ?? ""
-        keys[i] = ext
-        let old = extMap[ext] ?? (0,0); extMap[ext] = (old.0 + s.counted[i], old.1 + 1)
+    var extBytes = [Int64](repeating: 0, count: s.extensionBytes.count)
+    var extFiles = [Int64](repeating: 0, count: s.extensionBytes.count)
+    for i in 1..<n where s.extensionIDs[i] >= 0 {
+        let e = Int(s.extensionIDs[i]); extBytes[e] += s.counted[i]; extFiles[e] += 1
     }
-    let sorted = extMap.keys.sorted { extMap[$0]!.0 > extMap[$1]!.0 }
-    let indices = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($0.element, Int32($0.offset)) })
-    let extIndex = keys.enumerated().map { s.flags[$0.offset].contains(.isDir) ? Int32(-1) : (indices[$0.element] ?? -1) }
-    let extensions = sorted.map { ExtensionTotal(name: $0, bytes: extMap[$0]!.0, files: extMap[$0]!.1) }
-    var tree = FileTree(rootPath: s.rootPath, parent: s.parent, firstChild: first, childCount: counts, countedSize: s.counted, privateSize: s.priv, logicalSize: s.logical, fileCount: s.files, modTime: s.mod, extensionIndex: extIndex, flags: s.flags, nameOffset: s.offsets, nameLength: s.lengths, names: s.names, children: children, extensions: extensions, unreadablePaths: [], limitations: s.limitations.sorted(), volumeUsedBytes: s.volumeUsed, filesSeen: s.filesSeen, dirsSeen: s.dirsSeen, largestFiles: [])
+    let sorted = s.extensionBytes.indices.sorted { extBytes[$0] > extBytes[$1] }
+    var rank = [Int32](repeating: -1, count: sorted.count)
+    for (position, id) in sorted.enumerated() { rank[id] = Int32(position) }
+    let extIndex = s.extensionIDs.map { $0 < 0 ? -1 : rank[Int($0)] }
+    let largestFileType = largestNode.map { $0 < 0 ? Int32(-1) : extIndex[Int($0)] }
+    let extensions = sorted.map { id in ExtensionTotal(name: String(decoding: s.extensionBytes[id], as: UTF8.self), bytes: extBytes[id], files: extFiles[id]) }
+    var tree = FileTree(rootPath: s.rootPath, parent: s.parent, firstChild: first, childCount: counts, countedSize: s.counted, privateSize: s.priv, logicalSize: s.logical, fileCount: s.files, modTime: s.mod, extensionIndex: extIndex, largestFileType: largestFileType, flags: s.flags, nameOffset: s.offsets, nameLength: s.lengths, names: s.names, children: children, extensions: extensions, unreadablePaths: [], limitations: s.limitations.sorted(), volumeUsedBytes: s.volumeUsed, filesSeen: s.filesSeen, dirsSeen: s.dirsSeen, largestFiles: [])
     let paths = s.unreadable.map { tree.path(of: $0) }
     let largest = tree.topFiles(limit: 100)
-    tree = FileTree(rootPath: s.rootPath, parent: s.parent, firstChild: first, childCount: counts, countedSize: s.counted, privateSize: s.priv, logicalSize: s.logical, fileCount: s.files, modTime: s.mod, extensionIndex: extIndex, flags: s.flags, nameOffset: s.offsets, nameLength: s.lengths, names: s.names, children: children, extensions: extensions, unreadablePaths: paths, limitations: s.limitations.sorted(), volumeUsedBytes: s.volumeUsed, filesSeen: s.filesSeen, dirsSeen: s.dirsSeen, largestFiles: largest)
+    tree = FileTree(rootPath: s.rootPath, parent: s.parent, firstChild: first, childCount: counts, countedSize: s.counted, privateSize: s.priv, logicalSize: s.logical, fileCount: s.files, modTime: s.mod, extensionIndex: extIndex, largestFileType: largestFileType, flags: s.flags, nameOffset: s.offsets, nameLength: s.lengths, names: s.names, children: children, extensions: extensions, unreadablePaths: paths, limitations: s.limitations.sorted(), volumeUsedBytes: s.volumeUsed, filesSeen: s.filesSeen, dirsSeen: s.dirsSeen, largestFiles: largest)
     return tree
 }

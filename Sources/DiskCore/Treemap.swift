@@ -1,0 +1,192 @@
+import Foundation
+import Dispatch
+
+public struct PixelRect: Sendable {
+    public let x: Int, y: Int, width: Int, height: Int
+}
+
+public struct MapColor: Sendable {
+    public let r: UInt8, g: UInt8, b: UInt8
+    public init(_ r: UInt8, _ g: UInt8, _ b: UInt8) { self.r = r; self.g = g; self.b = b }
+}
+
+public struct TreemapParams: Sendable {
+    public var ridgeHeight: Float = 0.75
+    public var ridgeFactor: Float = 0.75
+    public var ambient: Float = 0.55
+    public var diffuse: Float = 0.45
+    public var light: (Float, Float, Float) = (-0.35, -0.45, 0.82)
+    public var palette: [MapColor] = [MapColor(67, 147, 220), MapColor(99, 185, 130), MapColor(230, 169, 73), MapColor(169, 122, 211), MapColor(220, 111, 117), MapColor(85, 187, 185)]
+    public var otherColor = MapColor(120, 137, 155)
+    public init() {}
+}
+
+// Four surface coefficients encode the x and y slopes of a quadratic cushion.
+// A constant height term is omitted because lighting uses only the slopes.
+public struct TreemapLayout: Sendable {
+    public let width: Int, height: Int
+    public let nodeIDs: [Int32]
+    public let x: [Int32], y: [Int32], widths: [Int32], heights: [Int32]
+    public let surfaceX2: [Float], surfaceX: [Float], surfaceY2: [Float], surfaceY: [Float]
+    public let colorIndex: [Int32]
+    fileprivate let pixelOwner: [Int32]
+    private let tileOwner: [Int32]
+    private let tileWidth: Int
+    private let nodeBox: [Int32]
+
+    public var boxCount: Int { nodeIDs.count }
+    public func rect(of node: Int32) -> PixelRect? {
+        let n = Int(node)
+        guard n >= 0, n < nodeBox.count, nodeBox[n] >= 0 else { return nil }
+        let i = Int(nodeBox[n])
+        return PixelRect(x: Int(x[i]), y: Int(y[i]), width: Int(widths[i]), height: Int(heights[i]))
+    }
+    public func hitTest(x px: Int, y py: Int) -> Int32? {
+        guard px >= 0, py >= 0, px < width, py < height else { return nil }
+        let tile = tileOwner[(py / 8) * tileWidth + px / 8]
+        let i = Int(tile >= 0 ? tile : pixelOwner[py * width + px])
+        return i >= 0 ? nodeIDs[i] : nil
+    }
+
+    fileprivate init(width: Int, height: Int, nodeIDs: [Int32], x: [Int32], y: [Int32], widths: [Int32], heights: [Int32], surfaceX2: [Float], surfaceX: [Float], surfaceY2: [Float], surfaceY: [Float], colorIndex: [Int32], pixelOwner: [Int32], nodeBox: [Int32]) {
+        self.width = width; self.height = height; self.nodeIDs = nodeIDs
+        self.x = x; self.y = y; self.widths = widths; self.heights = heights
+        self.surfaceX2 = surfaceX2; self.surfaceX = surfaceX
+        self.surfaceY2 = surfaceY2; self.surfaceY = surfaceY
+        self.colorIndex = colorIndex; self.pixelOwner = pixelOwner; self.nodeBox = nodeBox
+        tileWidth = (width + 7) / 8
+        var tiles = [Int32](repeating: -1, count: tileWidth * ((height + 7) / 8))
+        if width > 0 && height > 0 {
+            for ty in 0..<((height + 7) / 8) {
+                for tx in 0..<tileWidth {
+                    let first = pixelOwner[(ty * 8) * width + tx * 8]
+                    var same = true
+                    for py in (ty * 8)..<min(height, ty * 8 + 8) {
+                        for px in (tx * 8)..<min(width, tx * 8 + 8) where pixelOwner[py * width + px] != first { same = false }
+                    }
+                    if same { tiles[ty * tileWidth + tx] = first }
+                }
+            }
+        }
+        tileOwner = tiles
+    }
+}
+
+private struct Surface { var x2: Float = 0, x: Float = 0, y2: Float = 0, y: Float = 0 }
+private struct Region { var x: Int, y: Int, w: Int, h: Int }
+private final class PixelWriter: @unchecked Sendable {
+    let pointer: UnsafeMutablePointer<UInt8>
+    init(_ pointer: UnsafeMutablePointer<UInt8>) { self.pointer = pointer }
+}
+
+public enum Treemap {
+    public static func layout(tree: FileTree, rootNode: Int32, widthPx: Int, heightPx: Int, params: TreemapParams = TreemapParams()) -> TreemapLayout {
+        let w = max(0, widthPx), h = max(0, heightPx)
+        var ids: [Int32] = [], xx: [Int32] = [], yy: [Int32] = [], ww: [Int32] = [], hh: [Int32] = []
+        var ax: [Float] = [], bx: [Float] = [], ay: [Float] = [], by: [Float] = [], colors: [Int32] = []
+        var owner = [Int32](repeating: -1, count: w * h)
+        var nodeBox = [Int32](repeating: -1, count: tree.parent.count)
+        guard rootNode >= 0, Int(rootNode) < tree.parent.count, tree.countedSize[Int(rootNode)] > 0, w > 0, h > 0 else {
+            return TreemapLayout(width: w, height: h, nodeIDs: ids, x: xx, y: yy, widths: ww, heights: hh, surfaceX2: ax, surfaceX: bx, surfaceY2: ay, surfaceY: by, colorIndex: colors, pixelOwner: owner, nodeBox: nodeBox)
+        }
+        func add(_ node: Int32, _ r: Region, _ s: Surface, _ terminal: Bool) {
+            guard r.w > 0, r.h > 0 else { return }
+            let i = Int32(ids.count)
+            ids.append(node); xx.append(Int32(r.x)); yy.append(Int32(r.y)); ww.append(Int32(r.w)); hh.append(Int32(r.h))
+            ax.append(s.x2); bx.append(s.x); ay.append(s.y2); by.append(s.y)
+            colors.append(tree.largestFileType[Int(node)]); nodeBox[Int(node)] = i
+            if terminal {
+                for py in r.y..<(r.y + r.h) {
+                    let row = py * w
+                    for px in r.x..<(r.x + r.w) { owner[row + px] = i }
+                }
+            }
+        }
+        func ridge(_ s: Surface, _ r: Region, _ height: Float) -> Surface {
+            var z = s
+            if r.w > 0 { let k = height / Float(r.w); z.x2 -= k; z.x += k * Float(2 * r.x + r.w) }
+            if r.h > 0 { let k = height / Float(r.h); z.y2 -= k; z.y += k * Float(2 * r.y + r.h) }
+            return z
+        }
+        func worst(_ sizes: [Int64], _ start: Int, _ end: Int, _ short: Double, _ scale: Double) -> Double {
+            var sum = 0.0, lo = Double.greatestFiniteMagnitude, hi = 0.0
+            for j in start..<end { let v = Double(sizes[j]) * scale; sum += v; lo = min(lo, v); hi = max(hi, v) }
+            guard lo > 0, short > 0 else { return .infinity }
+            let sq = sum * sum
+            return max(short * short * hi / sq, sq / (short * short * lo))
+        }
+        func visit(_ node: Int32, _ r: Region, _ surface: Surface, _ level: Int) {
+            let dir = tree.flags[Int(node)].contains(.isDir)
+            let terminal = !dir || r.w < 2 || r.h < 2 || tree.childCount[Int(node)] == 0
+            add(node, r, surface, terminal)
+            if terminal { return }
+            let begin = Int(tree.firstChild[Int(node)]), count = Int(tree.childCount[Int(node)])
+            var children: [Int32] = [], sizes: [Int64] = []
+            for j in begin..<(begin + count) {
+                let child = tree.children[j], size = tree.countedSize[Int(child)]
+                if size > 0 { children.append(child); sizes.append(size) }
+            }
+            guard !children.isEmpty else { return }
+            let total = sizes.reduce(Int64(0), +)
+            var remaining = r, used = 0, start = 0
+            let nextHeight = params.ridgeHeight * pow(params.ridgeFactor, Float(level))
+            while start < children.count && remaining.w > 0 && remaining.h > 0 {
+                let horizontal = remaining.w < remaining.h
+                let short = Double(min(remaining.w, remaining.h))
+                let scale = Double(remaining.w) * Double(remaining.h) / Double(max(1, total - Int64(used)))
+                var end = start + 1
+                while end < children.count && worst(sizes, start, end + 1, short, scale) <= worst(sizes, start, end, short, scale) { end += 1 }
+                let rowSum = sizes[start..<end].reduce(Int64(0), +)
+                let lastRow = end == children.count
+                let thickness = lastRow ? (horizontal ? remaining.h : remaining.w) : max(0, min(horizontal ? remaining.h : remaining.w, Int((Double(rowSum) * scale / Double(horizontal ? remaining.w : remaining.h)).rounded())))
+                let span = horizontal ? remaining.w : remaining.h
+                var cursor = 0, rowUsed: Int64 = 0
+                for j in start..<end {
+                    rowUsed += sizes[j]
+                    let edge = j == end - 1 ? span : Int((Double(rowUsed) / Double(rowSum) * Double(span)).rounded())
+                    let length = max(0, edge - cursor)
+                    let box = horizontal ? Region(x: remaining.x + cursor, y: remaining.y, w: length, h: thickness) : Region(x: remaining.x, y: remaining.y + cursor, w: thickness, h: length)
+                    if box.w > 0 && box.h > 0 { visit(children[j], box, ridge(surface, box, nextHeight), level + 1) }
+                    cursor = edge
+                }
+                if horizontal { remaining.y += thickness; remaining.h -= thickness }
+                else { remaining.x += thickness; remaining.w -= thickness }
+                used += Int(rowSum); start = end
+            }
+        }
+        visit(rootNode, Region(x: 0, y: 0, w: w, h: h), Surface(), 0)
+        return TreemapLayout(width: w, height: h, nodeIDs: ids, x: xx, y: yy, widths: ww, heights: hh, surfaceX2: ax, surfaceX: bx, surfaceY2: ay, surfaceY: by, colorIndex: colors, pixelOwner: owner, nodeBox: nodeBox)
+    }
+
+    public static func shade(_ layout: TreemapLayout, into rgba: inout [UInt8], params: TreemapParams = TreemapParams(), highlightExtension: Int32? = nil) {
+        let width = layout.width, height = layout.height
+        guard width > 0 && height > 0 else { rgba = []; return }
+        if rgba.count != width * height * 4 { rgba = [UInt8](repeating: 0, count: width * height * 4) }
+        rgba.withUnsafeMutableBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            let writer = PixelWriter(base)
+            let bands = min(max(1, ProcessInfo.processInfo.activeProcessorCount), height)
+            DispatchQueue.concurrentPerform(iterations: bands) { band in
+                let y0 = band * height / bands, y1 = (band + 1) * height / bands
+                for py in y0..<y1 {
+                    for px in 0..<width {
+                        let at = py * width + px, out = at * 4
+                        let i = Int(layout.pixelOwner[at])
+                        if i < 0 { writer.pointer[out] = 24; writer.pointer[out+1] = 29; writer.pointer[out+2] = 35; writer.pointer[out+3] = 255; continue }
+                        let type = layout.colorIndex[i]
+                        let color = type >= 0 && !params.palette.isEmpty ? params.palette[Int(type) % params.palette.count] : params.otherColor
+                        let nx = -(2 * layout.surfaceX2[i] * Float(px) + layout.surfaceX[i])
+                        let ny = -(2 * layout.surfaceY2[i] * Float(py) + layout.surfaceY[i])
+                        let light = max(0, (nx * params.light.0 + ny * params.light.1 + params.light.2) / sqrt(nx * nx + ny * ny + 1))
+                        let dim: Float = highlightExtension == nil || highlightExtension == type ? 1 : 0.22
+                        let value = min(1.3, max(0, params.ambient + params.diffuse * light)) * dim
+                        writer.pointer[out] = UInt8(min(255, Float(color.r) * value))
+                        writer.pointer[out+1] = UInt8(min(255, Float(color.g) * value))
+                        writer.pointer[out+2] = UInt8(min(255, Float(color.b) * value))
+                        writer.pointer[out+3] = 255
+                    }
+                }
+            }
+        }
+    }
+}
