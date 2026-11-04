@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cushion looks</title>
+<style>
+/* ---------- Page chrome: plain and neutral ---------- */
+:root { --sys: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, Helvetica, Arial, sans-serif;
+        --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
+* { box-sizing: border-box; }
+html, body { margin: 0; overflow-x: hidden; }
+body { font-family: var(--sys); background: #ececee; color: #1d1d1f; -webkit-font-smoothing: antialiased; }
+.page-head { max-width: 2400px; margin: 0 auto; padding: 28px 24px 20px; }
+.page-head h1 { font-size: 22px; font-weight: 650; margin: 0 0 6px; letter-spacing: -0.01em; }
+.page-head .sub { margin: 0; font-size: 14px; color: #55555a; line-height: 1.45; max-width: 860px; }
+.badge { display: inline-block; font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+         background: #fff3c4; color: #6b5300; border: 1px solid #e6d07a; border-radius: 4px; padding: 1px 6px; margin-right: 6px; vertical-align: 1px; }
+#ask { margin-top: 16px; max-width: 860px; background: #fff; border: 2px dashed #8a8a92; border-radius: 8px; padding: 12px 16px; }
+#ask::before { content: "Question for you"; display: block; font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; color: #8a8a92; margin-bottom: 4px; }
+#ask p { margin: 0; font-size: 16px; font-weight: 600; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 44px 36px; max-width: 2400px; margin: 0 auto; padding: 8px 24px 64px; }
+@media (min-width: 900px) { .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+@media (max-width: 560px) { .grid { padding: 8px 12px 48px; } .page-head { padding: 20px 12px 16px; } }
+.card { min-width: 0; }
+.stage { position: relative; width: 100%; aspect-ratio: 1180 / 760; }
+.card h2 { font-size: 15px; font-weight: 650; margin: 14px 0 3px; }
+.card p.note { margin: 0; font-size: 13.5px; color: #4a4a50; line-height: 1.45; }
+.card p.meta { margin: 4px 0 0; font-size: 12px; color: #86868b; }
+
+/* ---------- Shared window skeleton (1180 x 760 CSS px, scaled) ---------- */
+.win { position: absolute; left: 0; top: 0; width: 1180px; height: 760px; transform-origin: 0 0; transform: scale(var(--s, .5));
+       display: flex; flex-direction: column; overflow: hidden; font-family: var(--sys); cursor: default; user-select: none; -webkit-user-select: none; }
+.tb { flex: none; position: relative; display: flex; align-items: center; }
+.lights { display: flex; gap: 8px; padding-left: 14px; position: relative; z-index: 1; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; display: block; box-shadow: inset 0 0 0 .5px rgba(0,0,0,.18); }
+.lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+.tb .title { position: absolute; left: 0; right: 0; text-align: center; pointer-events: none; }
+.panes { flex: 1; min-height: 0; display: flex; }
+.pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.pane.tree { flex: 0 0 var(--tree-w, 60%); }
+.pane.types { flex: 1; }
+.ptitle { display: none; }
+.hdr, .row { display: grid; align-items: center; white-space: nowrap; }
+.tree .hdr, .tree .row { grid-template-columns: minmax(0, 1fr) 78px 78px 62px; }
+.types .hdr, .types .row { grid-template-columns: 22px minmax(0, 1fr) 78px 62px; }
+.hdr > span, .row > span { overflow: hidden; text-overflow: ellipsis; padding: 0 var(--cell-px, 6px); }
+.num { text-align: right; }
+.body { flex: 1; min-height: 0; overflow: auto; position: relative; scrollbar-width: thin; }
+.row { height: var(--row-h, 20px); }
+.nm { display: flex; align-items: center; min-width: 0; }
+.nm .tx { overflow: hidden; text-overflow: ellipsis; }
+.tw { flex: none; display: inline-block; width: 14px; text-align: center; font-size: 1.05em; line-height: 1; opacity: .6; }
+.ic { flex: none; display: inline-block; margin-right: 5px; }
+.ic.dir { width: 14px; height: 10px; border-radius: 2px; position: relative; }
+.ic.dir::before { content: ""; position: absolute; left: 0; top: -2px; width: 6px; height: 3px; border-radius: 1px 1px 0 0; background: inherit; }
+.ic.file { width: 9px; height: 12px; border-radius: 1.5px; }
+.sw { display: inline-block; width: 12px; height: 12px; vertical-align: middle; }
+.row em { font-style: italic; opacity: .7; font-size: .92em; }
+.row.unr .tx { font-style: italic; opacity: .6; }
+.map { flex: none; height: var(--map-h, 456px); position: relative; overflow: hidden; }
+.map canvas { display: block; width: 100%; height: 100%; }
+.frame { position: absolute; display: none; pointer-events: none; }
+.status { flex: none; height: var(--st-h, 22px); display: flex; align-items: center; white-space: nowrap; overflow: hidden; }
+.status span { overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- A. Faithful ---------- */
+.look-a { border-radius: 10px; background: #ececec; color: #1d1d1f; font-size: 12px;
+          box-shadow: 0 0 0 .5px rgba(0,0,0,.35), 0 14px 40px rgba(0,0,0,.22); --row-h: 18px; --map-h: 456px; --st-h: 22px; --tree-w: 60%; }
+.look-a .tb { height: 28px; background: linear-gradient(#ececec, #d9d9d9); border-bottom: 1px solid #b4b4b4; }
+.look-a .tb .title { font-size: 13px; font-weight: 600; color: #4b4b4b; }
+.look-a .pane { background: #fff; }
+.look-a .pane.tree { border-right: 1px solid #b9b9b9; }
+.look-a .hdr { height: 20px; font-size: 11px; background: #f4f4f4; border-bottom: 1px solid #cfcfcf; color: #333; }
+.look-a .hdr > span + span { border-left: 1px solid #dadada; }
+.look-a .row:hover { background: #f1f5fd; }
+.look-a .row.sel { background: #2463d6; color: #fff; }
+.look-a .ic.dir { background: #5aa0f0; } .look-a .ic.file { background: #fff; box-shadow: inset 0 0 0 1px #9a9a9a; }
+.look-a .sw { border: 1px solid rgba(0,0,0,.35); }
+.look-a .map { border-top: 1px solid #9c9c9c; background: #808080; }
+.look-a .frame { border: 2px solid #fff; outline: 1px solid #000; }
+.look-a .status { background: #ececec; border-top: 1px solid #bdbdbd; font-size: 11.5px; color: #333; padding: 0 10px; }
+
+/* ---------- B. Quiet native ---------- */
+.look-b { border-radius: 16px; background: #fff; color: #1d1d1f; font-size: 13px;
+          box-shadow: 0 0 0 .5px rgba(0,0,0,.18), 0 18px 50px rgba(0,0,0,.16); --row-h: 26px; --map-h: 494px; --st-h: 26px; --tree-w: 58%; --cell-px: 8px; }
+.look-b .tb { height: 40px; background: #f7f7f7; border-bottom: 1px solid #e6e6e6; }
+.look-b .lights { padding-left: 18px; }
+.look-b .tb .title { font-size: 13px; font-weight: 600; color: #3c3c43; }
+.look-b .pane { background: #fff; padding: 2px 10px 0; }
+.look-b .pane.tree { border-right: 1px solid #ececec; }
+.look-b .hdr { height: 26px; font-size: 11px; font-weight: 500; color: #8a8a8e; border-bottom: 1px solid #efefef; }
+.look-b .row { border-radius: 6px; }
+.look-b .row:nth-child(even) { background: #f5f5f7; }
+.look-b .row.sel { background: #0a64d8; color: #fff; }
+.look-b .num { color: #6e6e73; } .look-b .row.sel .num { color: #fff; }
+.look-b .ic.dir { background: #6fb2f2; } .look-b .ic.file { background: #fff; box-shadow: inset 0 0 0 1px #c3c3c8; }
+.look-b .sw { border-radius: 3px; }
+.look-b .map { border-top: 1px solid #e6e6e6; background: #f2f2f4; }
+.look-b .frame { border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 2px 8px rgba(0,0,0,.25); border-radius: 2px; }
+.look-b .status { background: #f7f7f7; border-top: 1px solid #e6e6e6; font-size: 11px; color: #86868b; justify-content: center; padding: 0 16px; }
+
+/* ---------- C. Dark instrument ---------- */
+.look-c { border-radius: 12px; background: #1c1d21; color: #d5d8de; font-size: 12px;
+          box-shadow: 0 0 0 1px #000, 0 0 0 1.5px rgba(255,255,255,.08), 0 18px 50px rgba(0,0,0,.4); --row-h: 21px; --map-h: 456px; --st-h: 22px; --tree-w: 60%; }
+.look-c .tb { height: 30px; background: #26272c; border-bottom: 1px solid #0d0d0f; }
+.look-c .tb .title { font-size: 12px; font-weight: 600; color: #b7bbc4; }
+.look-c .pane { background: #1c1d21; }
+.look-c .pane.tree { border-right: 1px solid #2d2f35; }
+.look-c .hdr { height: 22px; font-size: 10px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: #737884; border-bottom: 1px solid #2d2f35; }
+.look-c .num { font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; color: #aeb3bd; }
+.look-c .hdr .num { font-family: var(--sys); font-size: 10px; color: #737884; }
+.look-c .row:hover { background: #24262b; }
+.look-c .row.sel { background: #22385c; color: #fff; box-shadow: inset 2px 0 0 #4c9aff; }
+.look-c .row.sel .num { color: #e6edf7; }
+.look-c .tw { opacity: .5; }
+.look-c .sw { border-radius: 2px; box-shadow: 0 0 6px var(--glow, transparent); }
+.look-c .map { border-top: 1px solid #000; background: #0b0c0e; }
+.look-c .frame { border: 2px solid #fff; box-shadow: 0 0 0 1px #000, 0 0 12px rgba(255,255,255,.55); }
+.look-c .status { background: #16171a; border-top: 1px solid #000; font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums; color: #8f95a0; padding: 0 12px; }
+
+/* ---------- D. No lines ---------- */
+.look-d { border-radius: 16px; background: #fff; color: #1d1d1f; font-size: 13px;
+          box-shadow: 0 0 0 .5px rgba(0,0,0,.12), 0 20px 60px rgba(0,0,0,.14); --row-h: 25px; --map-h: 456px; --st-h: 32px; --tree-w: 58%; --cell-px: 6px; }
+.look-d .tb { height: 38px; background: #fff; }
+.look-d .lights { padding-left: 18px; }
+.look-d .tb .title { font-size: 13px; font-weight: 600; color: #1d1d1f; }
+.look-d .panes { padding: 2px 24px 14px; gap: 40px; }
+.look-d .ptitle { display: block; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; padding: 0 6px 6px; }
+.look-d .tree .hdr, .look-d .tree .row { grid-template-columns: minmax(0, 1fr) 74px 74px 96px; }
+.look-d .hdr { height: 20px; font-size: 11px; font-weight: 600; color: #a1a1a6; }
+.look-d .num { color: #6e6e73; font-variant-numeric: tabular-nums; }
+.look-d .row { border-radius: 6px; color: #3a3a3c; }
+.look-d .row.d0, .look-d .row.d1 { color: #1d1d1f; font-weight: 600; }
+.look-d .row.d2 { color: #1d1d1f; font-weight: 500; }
+.look-d .row:hover { background: #f6f6f8; }
+.look-d .row.sel { background: #eaf0ff; color: #1438a8; }
+.look-d .pc { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.look-d .bar { flex: none; width: 46px; height: 3px; border-radius: 2px; background: #ededf0; overflow: hidden; }
+.look-d .bar i { display: block; height: 100%; background: #5b7cfa; border-radius: 2px; }
+.look-d .sw { width: 9px; height: 9px; border-radius: 50%; }
+.look-d .map { margin: 0 24px; height: calc(var(--map-h) - 12px); border-radius: 10px; background: #f4f4f6; }
+.look-d .frame { border: 2px solid #111; box-shadow: 0 0 0 2px rgba(255,255,255,.85); border-radius: 3px; }
+.look-d .status { font-size: 12px; color: #8e8e93; padding: 0 30px; }
+
+/* ---------- E. Dense ---------- */
+.look-e { border-radius: 8px; background: #e9e9e9; color: #1d1d1f; font-size: 11px;
+          box-shadow: 0 0 0 .5px rgba(0,0,0,.35), 0 12px 36px rgba(0,0,0,.22); --row-h: 15px; --map-h: 456px; --st-h: 16px; --tree-w: 64%; --cell-px: 4px; }
+.look-e .tree .hdr, .look-e .tree .row { grid-template-columns: minmax(0, 1fr) 72px 64px 48px; }
+.look-e .types .hdr, .look-e .types .row { grid-template-columns: 16px minmax(0, 1fr) 66px 46px; }
+.look-e .tb { height: 22px; background: linear-gradient(#ededed, #dcdcdc); border-bottom: 1px solid #b8b8b8; }
+.look-e .lights { gap: 6px; padding-left: 8px; } .look-e .lights i { width: 10px; height: 10px; }
+.look-e .tb .title { font-size: 11px; font-weight: 600; color: #4b4b4b; }
+.look-e .pane { background: #fff; }
+.look-e .pane.tree { border-right: 1px solid #c4c4c4; }
+.look-e .hdr { height: 15px; font-size: 10px; font-weight: 600; color: #555; background: #f2f2f2; border-bottom: 1px solid #d2d2d2; }
+.look-e .num { font-variant-numeric: tabular-nums; }
+.look-e .row:nth-child(even) { background: #f6f6f6; }
+.look-e .row.sel { background: #1f5fd1; color: #fff; }
+.look-e .tw { width: 11px; }
+.look-e .sw { width: 9px; height: 9px; }
+.look-e .map { border-top: 1px solid #a9a9a9; background: #888; }
+.look-e .frame { border: 1px solid #fff; outline: 1px solid #000; }
+.look-e .status { background: #e9e9e9; border-top: 1px solid #c4c4c4; font-size: 10px; color: #444; padding: 0 6px; }
+</style>
+</head>
+<body>
+<header class="page-head">
+  <h1>Cushion looks</h1>
+  <p class="sub"><span class="badge">Sample data</span>Five looks for the same Cushion main window. Every look uses the same made-up disk of about 3,000 files and the same map code; only spacing, type, chrome, map colors and cushion strength change. Hover a box, click a box, a folder row or a file type to try each one.</p>
+  <section id="ask" aria-label="Question for you"><p>Pick one of these 5 looks. I recommend B, Quiet native.</p><p style="font-weight:400;font-size:14px;margin-top:6px">Astra (the design advisor) also picked B, with D as runner-up. Before B becomes the real app, I would make 3 changes: clearer folder edges and more distinct file type colors, slightly shorter rows with stronger size numbers, and the selected path staying visible in the status line. Once you pick, I build the app in that look without stopping again.</p></section>
+</header>
+<main id="grid" class="grid"></main>
+<!-- One map canvas per look. The script moves each into its window. -->
+<div id="canvases" hidden>
+  <canvas data-look="a"></canvas>
+  <canvas data-look="b"></canvas>
+  <canvas data-look="c"></canvas>
+  <canvas data-look="d"></canvas>
+  <canvas data-look="e"></canvas>
+</div>
+
+<script>
+'use strict';
+
+// ===================================================================
+// 1. Seeded random numbers, so every load shows the same sample disk
+// ===================================================================
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rnd = mulberry32(0xC0510);
+function gauss() { let u = 0; while (u === 0) u = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rnd()); }
+function pick(a) { return a[Math.floor(rnd() * a.length)]; }
+function int(lo, hi) { return lo + Math.floor(rnd() * (hi - lo + 1)); }
+function pad2(n) { return String(n).padStart(2, '0'); }
+function hex(n, lower) { let s = ''; for (let i = 0; i < n; i++) s += '0123456789ABCDEF'[Math.floor(rnd() * 16)]; return lower ? s.toLowerCase() : s; }
+function uuid() { return `${hex(8)}-${hex(4)}-${hex(4)}-${hex(4)}-${hex(12)}`; }
+function alpha(n) { let s = ''; for (let i = 0; i < n; i++) s += 'abcdefghijklmnopqrstuvwxyz'[Math.floor(rnd() * 26)]; return s; }
+// Weighted pick: items are values or [value, weight].
+function wpick(list) {
+  let tot = 0;
+  for (const it of list) tot += Array.isArray(it) ? it[1] : 1;
+  let r = rnd() * tot;
+  for (const it of list) { r -= Array.isArray(it) ? it[1] : 1; if (r <= 0) return Array.isArray(it) ? it[0] : it; }
+  const last = list[list.length - 1];
+  return Array.isArray(last) ? last[0] : last;
+}
+
+// ===================================================================
+// 2. The shared sample tree (about 386 GB, about 3,000 files)
+// ===================================================================
+const GB = 1e9;
+const nodes = [];
+function mkNode(name, parent, isDir) {
+  const n = { id: nodes.length, name, parent, kids: isDir ? [] : null, byName: isDir ? new Map() : null,
+              size: 0, frees: 0, ext: '', depth: parent ? parent.depth + 1 : 0, unreadable: false };
+  nodes.push(n);
+  if (parent) { parent.kids.push(n); parent.byName.set(name, n); }
+  return n;
+}
+function dirAt(base, rel) {
+  let d = base;
+  if (!rel) return d;
+  for (const part of rel.split('/')) {
+    if (!part) continue;
+    let c = d.byName.get(part);
+    if (!c) c = mkNode(part, d, true);
+    if (!c.kids) throw new Error(`Sample data: "${part}" is a file, not a folder`);
+    d = c;
+  }
+  return d;
+}
+function uniqueName(dir, name) {
+  if (!dir.byName.has(name)) return name;
+  const dot = name.indexOf('.', 1);
+  const stem = dot > 0 ? name.slice(0, dot) : name, tail = dot > 0 ? name.slice(dot) : '';
+  let i = 2;
+  while (dir.byName.has(`${stem} ${i}${tail}`)) i++;
+  return `${stem} ${i}${tail}`;
+}
+
+const SWIFT = ['AppDelegate', 'ContentView', 'FileTree', 'Scanner', 'TreemapView', 'Cushion', 'SettingsView', 'NetworkClient',
+  'ImageCache', 'Router', 'Model', 'ViewModel', 'Store', 'Parser', 'Renderer', 'Forecast', 'Episode', 'Player', 'Cart', 'Checkout',
+  'Workout', 'HealthStore', 'Persistence', 'Theme', 'Analytics', 'Onboarding', 'Feed', 'Profile'];
+const JS = ['index', 'utils', 'main', 'lib', 'compiler', 'parser', 'runtime', 'helpers', 'types', 'server', 'client', 'bundle',
+  'config', 'plugin', 'loader', 'transform', 'cli', 'core', 'react-dom.development', 'react.production.min', 'lodash', 'chunk'];
+const INSTALLERS = ['Xcode_26.1', 'Docker', 'Figma-arm64', 'Blender-4.5-arm64', 'zoomusInstallerFull', 'googlechrome', 'SpotifyInstaller',
+  'OBS-Studio-31.1', 'steam', 'UTM', 'Install macOS Tahoe', 'Firefox 144.0', 'node-v24.2.0', 'VSCode-darwin-arm64', 'Rectangle0.85',
+  'Logic Pro Sound Library', 'Affinity Photo 2', 'DaVinci_Resolve_20', 'Photos export', 'Project backup', 'Signal-desktop'];
+const DOCS = ['Invoice', 'Tax return 2025', 'Lease agreement', 'Resume', 'Meeting notes', 'Report Q3', 'Slides', 'Budget', 'Manual',
+  'Paper', 'Thesis draft', 'Receipt', 'Passport scan', 'Insurance', 'Roadmap', 'Pitch deck', 'Recipe book', 'Contract'];
+const WORDS = ['data', 'index', 'store', 'cache', 'state', 'config', 'archive', 'assets', 'metadata', 'session', 'manifest', 'log',
+  'snapshot', 'model', 'preview', 'thumbs', 'blob', 'segment', 'journal', 'catalog'];
+const BINS = ['Xcode', 'Slack', 'Docker', 'Electron Framework', 'Chromium Framework', 'Code Helper', 'Logic Pro X', 'Figma',
+  'swift-frontend', 'clang', 'ld', 'lldb-rpc-server', 'Final Cut Pro', 'Photoshop', 'Spotify', 'zoom.us', 'Blender', 'Microsoft Word'];
+const LIBS = ['swiftCore', 'swiftFoundation', 'LLVM', 'clang-cpp', 'sqlite3', 'z.1', 'c++.1', 'IDEFoundation', 'DVTFoundation',
+  'sourcekitdInProc', 'swiftDemangle', 'ffmpeg.7', 'avcodec.61', 'crypto.3', 'ssl.3', 'MTLCompiler', 'node.127', 'Qt6Core'];
+const BOTTLES = ['node--24.1.0', 'python@3.13--3.13.5', 'ffmpeg--7.1.1', 'llvm--20.1.6', 'openssl@3--3.5.0', 'qt--6.9.1', 'boost--1.88.0',
+  'gcc--15.1.0', 'imagemagick--7.1.1', 'postgresql@17--17.5', 'rust--1.88.0', 'go--1.24.4', 'opencv--4.11.0'];
+const SONGS = ['Morning Light', 'Night Drive', 'Harbor', 'Paper Planes', 'Static', 'Glasshouse', 'Low Tide', 'Northbound',
+  'Lanterns', 'Afterglow', 'Copper', 'Fieldnotes', 'Undertow', 'Wildfire', 'Small Hours', 'Weightless'];
+
+function fileName(ext) {
+  switch (ext) {
+    case 'mov': case 'mp4': case 'm4v': {
+      const r = rnd();
+      if (r < .35) return `IMG_${int(1000, 9999)}.${ext}`;
+      if (r < .6) return `Screen Recording 2026-${pad2(int(1, 10))}-${pad2(int(1, 28))} at ${pad2(int(8, 21))}.${pad2(int(0, 59))}.${pad2(int(0, 59))}.${ext}`;
+      return `${pick(['Drone', 'Beach', 'Interview', 'B-roll', 'Timelapse', 'Keynote rehearsal', 'Kids', 'Wedding', 'Concert', 'Hike'])} ${int(1, 60)}.${ext}`;
+    }
+    case 'heic': case 'jpg': case 'png': case 'dng': case 'aae': return `${uuid()}.${ext}`;
+    case 'o': case 'swiftmodule': case 'swiftdoc': case 'd': case 'dia': case 'swiftdeps': case 'swift':
+      return `${pick(SWIFT)}${rnd() < .3 ? '+' + pick(['Extensions', 'Preview', 'Helpers', 'Codable']) : ''}.${ext}`;
+    case 'pcm': return `${pick(['Darwin', 'Foundation', 'SwiftUI', 'UIKit', 'CoreGraphics', 'ObjectiveC', 'Dispatch', 'CoreFoundation', 'os', 'Metal'])}-${hex(13)}.pcm`;
+    case 'js': return `${pick(JS)}${rnd() < .2 ? '-' + hex(8, true) : ''}.js`;
+    case 'map': return `${pick(JS)}.js.map`;
+    case 'ts': return `${pick(JS)}.d.ts`;
+    case 'json': return `${pick(['package', 'tsconfig', 'manifest', 'schema', 'en', 'data', 'build-manifest', 'routes'])}.json`;
+    case 'node': return `${pick(['sharp-darwin-arm64', 'esbuild', 'swc.darwin-arm64', 'better_sqlite3', 'canvas', 'fsevents', 'query_engine-darwin-arm64'])}.node`;
+    case 'md': return `${pick(['README', 'CHANGELOG', 'LICENSE', 'CONTRIBUTING', 'HISTORY'])}.md`;
+    case 'dmg': case 'zip': case 'pkg': return `${pick(INSTALLERS)}.${ext}`;
+    case 'pdf': case 'docx': case 'pages': case 'key': case 'xlsx': case 'numbers': case 'txt':
+      return `${pick(DOCS)}${rnd() < .5 ? ' ' + int(1, 40) : ''}.${ext}`;
+    case 'm4a': case 'mp3': case 'wav': case 'aif': return `${pad2(int(1, 14))} ${pick(SONGS)}.${ext}`;
+    case 'dylib': return `lib${pick(LIBS)}.dylib`;
+    case 'car': return 'Assets.car';
+    case 'gz': return `${pick(BOTTLES)}.arm64_tahoe.bottle.tar.gz`;
+    case 'sqlite': case 'db': return `${pick(['Photos', 'Cache', 'index', 'store', 'Accounts4', 'knowledgeC', 'Cookies', 'History', 'Favicons', 'Metadata', 'storage'])}.${ext}`;
+    case 'cache': case 'bin': case 'data': return `${hex(16, true)}.${ext}`;
+    case 'nib': case 'strings': case 'plist': case 'icns': case 'metallib': case 'bom': case 'xml':
+      return `${pick(['Info', 'Localizable', 'MainMenu', 'Preferences', 'AppIcon', 'default', 'Settings', 'InfoPlist', 'Toolbar', 'Document'])}.${ext}`;
+    case 'npz': case 'csv': case 'parquet': case 'pt': case 'ckpt':
+      return `${pick(['train', 'val', 'test', 'embeddings', 'features', 'weights', 'checkpoint', 'events'])}-${pad2(int(0, 99))}.${ext}`;
+    case 'vmem': case 'img': return `${pick(['disk0', 'iOS_26.1_Runtime', 'watchOS_26_Runtime', 'system'])}.${ext}`;
+    case '': return rnd() < .5 ? pick(BINS) : `f_${hex(6, true)}`;
+    default: return `${pick(WORDS)}${rnd() < .5 ? '-' + int(1, 99) : ''}.${ext}`;
+  }
+}
+
+// Make s.n files whose sizes add up to s.gb, spread over folders.
+// s.ext: { ext: countWeight } or { ext: [countWeight, sizeWeight] }
+// s.place(ext) returns a folder path under dir ('' means dir itself).
+function fill(dir, s) {
+  const exts = Object.entries(s.ext).map(([e, v]) => [e, Array.isArray(v) ? v : [v, 1]]);
+  const countList = exts.map(([e, [c]]) => [e, c]);
+  const sizeW = Object.fromEntries(exts.map(([e, [, w]]) => [e, w]));
+  const made = [];
+  let sum = 0;
+  for (let i = 0; i < s.n; i++) {
+    const ext = wpick(countList);
+    const d = dirAt(dir, s.place ? s.place(ext) : '');
+    const f = mkNode(uniqueName(d, fileName(ext)), d, false);
+    f.ext = ext;
+    const w = sizeW[ext] * Math.exp((s.sigma ?? 1.1) * gauss());
+    made.push([f, w]); sum += w;
+  }
+  const k = s.gb * GB / sum;
+  for (const [f, w] of made) {
+    f.size = Math.max(600, Math.round(w * k));
+    // Frees: bytes freed by deleting. Clones and hard links free less; the sealed system frees nothing.
+    f.frees = s.noFree ? 0 : (rnd() < (s.shared || 0) ? Math.round(f.size * rnd() * 0.3) : f.size);
+  }
+}
+function file(dir, name, bytes) { const f = mkNode(name, dir, false); f.ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : ''; f.size = bytes; f.frees = bytes; }
+function unreadable(dir) { dir.unreadable = true; }
+
+const root = mkNode('Macintosh HD', null, true);
+const alex = dirAt(root, 'Users/alex');
+{
+  // Xcode DerivedData: deep build folders per project
+  const projects = [['Cushion', 5], ['Weather', 3], ['PodcastPlayer', 4], ['Notes2', 2], ['Shopfront', 3], ['FitnessTracker', 2]]
+    .map(([p, w]) => [[p, `${p}-${alpha(28)}`], w]);
+  fill(dirAt(alex, 'Library/Developer/Xcode/DerivedData'), {
+    gb: 41, n: 380, sigma: 1.3, shared: .04,
+    ext: { o: [40, 1.6], swiftmodule: [8, 3], swiftdoc: [3, .3], d: [8, .05], dia: [5, .05], swiftdeps: [6, .1], pcm: [14, 2.5], '': [3, 6], dylib: [4, 6], car: [2, 2], unit: [6, .1] },
+    place(ext) {
+      if (ext === 'pcm') return `ModuleCache.noindex/${hex(13)}`;
+      const [p, dir] = wpick(projects);
+      if (ext === '' || ext === 'dylib' || ext === 'car') return `${dir}/Build/Products/Debug-iphonesimulator/${p}.app${ext === 'dylib' ? '/Frameworks' : ''}`;
+      if (ext === 'unit') return `${dir}/Index.noindex/DataStore/v5/units`;
+      return `${dir}/Build/Intermediates.noindex/${p}.build/Debug-iphonesimulator/${p}.build/Objects-normal/arm64`;
+    }
+  });
+  fill(dirAt(alex, 'Library/Developer/Xcode/iOS DeviceSupport'), {
+    gb: 5, n: 40, sigma: 1.4, ext: { '': [3, 10], dylib: [6, 2], plist: [1, .01] },
+    place() { return `${pick(['iPhone17,1 26.0.1 (23A355)', 'iPhone16,2 18.6 (22G86)'])}/Symbols/System/Library/${pick(['Frameworks', 'PrivateFrameworks', 'Caches/com.apple.dyld'])}`; }
+  });
+  // CoreSimulator: devices share runtime data through clones, so Frees is lower here
+  const devices = Array.from({ length: 9 }, (_, i) => [uuid(), 9 - i]);
+  fill(dirAt(alex, 'Library/Developer/CoreSimulator/Devices'), {
+    gb: 26, n: 220, sigma: 1.5, shared: .35,
+    ext: { '': [3, 12], sqlite: [5, 2], db: [3, 2], plist: [8, .05], png: [6, .3], car: [3, 1], dylib: [3, 6], img: [1, 20] },
+    place(ext) {
+      const dev = wpick(devices);
+      if (ext === '') return `${dev}/data/Library/Caches/com.apple.dyld`;
+      return `${dev}/data/Containers/${pick(['Data/Application', 'Bundle/Application', 'Shared/AppGroup'])}/${hex(8)}-${hex(4)}/Library/${pick(['Caches', 'Application Support', 'Preferences'])}`;
+    }
+  });
+  fill(dirAt(alex, 'Library/Developer/CoreSimulator/Caches'), { gb: 5, n: 30, sigma: 1.2, shared: .2, ext: { '': [2, 6], dyldcache: [3, 4], plist: [1, .01] },
+    place() { return `dyld/${pick(['23A343', '22G86'])}/com.apple.CoreSimulator.SimRuntime.iOS-${pick(['26-1', '18-6'])}.${pick(['23A343', '22G86'])}`; } });
+  // Caches
+  fill(dirAt(alex, 'Library/Caches'), {
+    gb: 16, n: 200, sigma: 1.5,
+    ext: { '': [5, 1], db: [2, 2], gz: [2, 10], zip: [2, 4], json: [1, .05], cache: [3, 1], bin: [2, 2] },
+    place(ext) {
+      if (ext === 'gz') return 'Homebrew/downloads';
+      if (ext === 'zip') return pick(['Yarn/v6', 'org.swift.swiftpm/repositories', 'com.microsoft.VSCode.ShipIt']);
+      return pick(['com.apple.dt.Xcode', 'Google/Chrome/Default/Cache/Cache_Data', 'com.spotify.client/Data', 'pip/http-v2', 'go-build/' + hex(2, true), 'com.apple.Safari/WebKitCache', 'CloudKit', 'com.figma.Desktop', 'ms-playwright']);
+    }
+  });
+  fill(dirAt(alex, 'Library/Application Support'), {
+    gb: 11, n: 120, sigma: 1.4,
+    ext: { sqlite: [3, 3], db: [3, 2], json: [3, .05], '': [3, 3], cache: [2, 2], bin: [2, 6], ldb: [3, 1], log: [2, .3] },
+    place() { return pick(['Slack/Service Worker/CacheStorage', 'Google/Chrome/Default', 'Code/User/workspaceStorage', 'Spotify/PersistentCache', 'MobileSync/Backup/' + hex(8), 'Docker Desktop', 'Claude', 'discord/Cache', 'com.apple.TV']); }
+  });
+  fill(dirAt(alex, 'Library/Containers'), {
+    gb: 7, n: 80, sigma: 1.4,
+    ext: { sqlite: [3, 2], db: [2, 2], plist: [4, .02], jpg: [3, .3], '': [2, 4], mov: [1, 6] },
+    place() { return `${pick(['com.apple.mail', 'com.apple.Notes', 'com.apple.podcasts', 'com.apple.FinalCut', 'com.apple.iWork.Keynote', 'com.docker.docker'])}/Data/Library/${pick(['Caches', 'Application Support'])}`; }
+  });
+  unreadable(dirAt(alex, 'Library/Mail'));
+  unreadable(dirAt(alex, 'Library/Messages'));
+  // Movies with .mov files
+  fill(dirAt(alex, 'Movies'), {
+    gb: 78, n: 70, sigma: .9,
+    ext: { mov: [12, 1], mp4: [3, .7], m4v: [1, 1.2], fcpcache: [1, .4], plist: [1, .001] },
+    place(ext) {
+      if (ext === 'fcpcache' || ext === 'plist') return 'Wedding.fcpbundle/Render Files';
+      return wpick([['', 4], ['Exports', 3], ['Screen Recordings', 2], ['Trip to Lisbon 2025', 3], ['Wedding.fcpbundle/Original Media', 4]]);
+    }
+  });
+  // Photos Library
+  const lib = dirAt(alex, 'Pictures/Photos Library.photoslibrary');
+  fill(lib, { gb: 52, n: 260, sigma: .8, shared: .03, ext: { heic: [12, 1], jpg: [4, 1], mov: [3, 6], png: [2, .5], dng: [.6, 5], aae: [1, .002] },
+    place() { return `originals/${hex(1)}`; } });
+  fill(lib, { gb: 4, n: 60, sigma: .7, ext: { jpg: [5, 1], heic: [1, 1] }, place() { return `resources/derivatives/${hex(1)}`; } });
+  fill(lib, { gb: 1, n: 10, sigma: .9, ext: { sqlite: [3, 3], 'sqlite-wal': [1, .5], plist: [1, .001] }, place() { return 'database'; } });
+  // Projects with node_modules
+  const pkgs = ['react-dom', 'typescript', '@babel/core', 'esbuild', 'next', 'webpack', 'lodash', '@swc/core', 'sharp', 'prisma', '@types/node', 'eslint', 'vite', 'rollup', 'tailwindcss', 'jest', '@img/sharp-libvips-darwin-arm64', 'playwright-core'];
+  const nm = (gb, n) => ({ gb, n, sigma: 1.5, ext: { js: [40, 1], json: [10, .2], map: [8, 1.2], ts: [12, .4], node: [2, 60], md: [5, .2], wasm: [1, 30] },
+    place(ext) { const p = ext === 'node' || ext === 'wasm' ? pick(['sharp', '@swc/core', 'esbuild', 'prisma', '@img/sharp-libvips-darwin-arm64']) : pick(pkgs); return `${p}/${pick(['dist', 'lib', 'build', 'cjs', 'esm', ''])}`; } });
+  const P = dirAt(alex, 'Projects');
+  fill(dirAt(P, 'web-app/node_modules'), nm(6, 240));
+  fill(dirAt(P, 'web-app/.next'), { gb: 1.5, n: 60, sigma: 1.3, ext: { js: [6, 1], map: [3, 1.5], json: [1, .1], pack: [2, 6] }, place() { return pick(['cache/webpack/client-development', 'server/chunks', 'static/chunks']); } });
+  fill(dirAt(P, 'web-app/src'), { gb: .3, n: 40, sigma: 1.6, ext: { ts: [6, 1], tsx: [8, 1], css: [2, .5], png: [2, 20] }, place() { return pick(['components', 'pages', 'lib', 'styles', 'assets']); } });
+  fill(dirAt(P, 'api-server/node_modules'), nm(4.2, 160));
+  fill(dirAt(P, 'design-system/node_modules'), nm(3.8, 150));
+  fill(dirAt(P, 'cushion/.build'), { gb: 3.2, n: 90, sigma: 1.3, ext: { o: [10, 1], swiftmodule: [3, 2], '': [1, 20], json: [1, .05], pcm: [3, 2] },
+    place() { return pick(['arm64-apple-macosx/debug/DiskCore.build', 'arm64-apple-macosx/debug/cushion-bench.build', 'arm64-apple-macosx/release', 'checkouts/swift-collections/.build']); } });
+  fill(dirAt(P, 'cushion/Sources'), { gb: .1, n: 20, sigma: .8, ext: { swift: [1, 1] }, place() { return pick(['DiskCore', 'cushion-bench', 'CushionApp']); } });
+  fill(dirAt(P, 'ml-notes/data'), { gb: 4.9, n: 25, sigma: 1.1, ext: { parquet: [3, 1], npz: [2, 1], csv: [2, .3], pt: [1, 3] }, place() { return pick(['raw', 'processed', 'checkpoints']); } });
+  // Downloads with .dmg and .zip
+  fill(dirAt(alex, 'Downloads'), { gb: 21, n: 70, sigma: 1.3, ext: { dmg: [6, 3], zip: [5, 1.5], pkg: [2, 2], pdf: [4, .02], png: [2, .01], jpg: [2, .01], mp4: [1, .5] } });
+  fill(dirAt(alex, 'Documents'), { gb: 9, n: 100, sigma: 1.6, ext: { pdf: [8, 1], docx: [3, .3], pages: [2, .5], key: [2, 5], xlsx: [2, .2], numbers: [1, .2], txt: [1, .005], zip: [1, 4] },
+    place() { return wpick([['', 3], ['Work', 3], ['Taxes', 1], ['Home', 1], ['School', 1], ['Archive 2023', 1]]); } });
+  fill(dirAt(alex, 'Music'), { gb: 6, n: 80, sigma: .7, ext: { m4a: [8, 1], mp3: [3, .8], wav: [1, 5], aif: [.5, 5] },
+    place(ext) { return ext === 'wav' || ext === 'aif' ? 'Logic/Bounces' : `Music/Media.localized/Music/${pick(['Bonobo', 'Khruangbin', 'Nils Frahm', 'Phoebe Bridgers', 'Floating Points', 'Little Simz', 'Unknown Artist'])}`; } });
+}
+// Applications: app bundles
+fill(dirAt(root, 'Applications'), {
+  gb: 38, n: 200, sigma: 1.4,
+  ext: { '': [5, 3], dylib: [8, 4], car: [3, 3], nib: [6, .2], png: [8, .1], strings: [10, .03], plist: [5, .01], icns: [2, .3], metallib: [1, 2], pak: [1, 6] },
+  place(ext) {
+    const app = wpick([['Xcode.app', 30], ['Final Cut Pro.app', 7], ['Logic Pro.app', 5], ['Adobe Photoshop 2026/Adobe Photoshop 2026.app', 5], ['Docker.app', 3],
+      ['Microsoft Word.app', 3], ['Microsoft Excel.app', 3], ['Microsoft PowerPoint.app', 3], ['Google Chrome.app', 2], ['Slack.app', 1.5], ['Figma.app', 1.5],
+      ['Visual Studio Code.app', 1.5], ['Blender.app', 2], ['zoom.us.app', 1], ['Spotify.app', 1], ['Keynote.app', 1.2], ['Pages.app', 1], ['Numbers.app', 1]]);
+    const sub = ext === '' ? pick(['Contents/MacOS', 'Contents/Frameworks/Electron Framework.framework/Versions/A', 'Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin'])
+      : ext === 'dylib' ? pick(['Contents/Frameworks', 'Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib', 'Contents/SharedFrameworks'])
+      : `Contents/Resources${ext === 'strings' || ext === 'nib' ? '/' + pick(['en', 'de', 'fr', 'ja', 'zh_CN', 'es']) + '.lproj' : ''}`;
+    return `${app}/${sub}`;
+  }
+});
+// System: the sealed system volume, which deleting cannot free
+fill(dirAt(root, 'System'), {
+  gb: 26, n: 170, sigma: 1.4, noFree: true,
+  ext: { dylib: [6, 3], '': [6, 2], plist: [6, .02], car: [3, 2], strings: [6, .03], metallib: [1, 3], bom: [1, .5], dyldcache: [1, 60] },
+  place(ext) {
+    if (ext === 'dyldcache') return 'Volumes/Preboot/Cryptexes/OS/System/Library/dyld';
+    return pick(['Library/Frameworks', 'Library/PrivateFrameworks', 'Library/Extensions', 'Library/CoreServices', 'Applications', 'iOSSupport/System/Library/Frameworks', 'Library/AssetsV2/com_apple_MobileAsset_Font7', 'Library/Speech/Voices']);
+  }
+});
+fill(dirAt(root, 'Library'), {
+  gb: 11, n: 100, sigma: 1.4,
+  ext: { '': [3, 4], dylib: [3, 2], caf: [6, .3], plist: [3, .01], ttc: [3, .4], pkg: [1, 8], aif: [3, .6], db: [1, 1] },
+  place(ext) {
+    if (ext === 'caf' || ext === 'aif') return 'Audio/Apple Loops/Apple/' + pick(['01 Hip Hop', '02 Electronic', '06 Jazz', '10 Garage Band']);
+    if (ext === 'ttc') return 'Fonts';
+    if (ext === 'pkg') return 'Updates';
+    return pick(['Developer/CommandLineTools/usr/lib', 'Developer/CommandLineTools/usr/bin', 'Application Support/Apple', 'Caches/com.apple.amsengagementd', 'Frameworks']);
+  }
+});
+{
+  const vm = dirAt(root, 'private/var/vm');
+  file(vm, 'sleepimage', 2.0 * GB); file(vm, 'swapfile0', 1.0 * GB); file(vm, 'swapfile1', 1.0 * GB);
+  fill(dirAt(root, 'private/var/db'), { gb: .6, n: 40, sigma: 1.3, ext: { db: [3, 2], plist: [3, .05], '': [3, 1], log: [2, .5] }, place() { return pick(['diagnostics', 'uuidtext/' + hex(2), 'analyticsd', 'dyld']); } });
+  fill(dirAt(root, 'private/var/folders'), { gb: .4, n: 40, sigma: 1.5, ext: { '': [3, 1], db: [2, 1], tmp: [2, .5] }, place() { return `${alpha(2)}/${alpha(30)}/${pick(['C', 'T', '0'])}`; } });
+  unreadable(dirAt(root, 'private/var/db/fpsd'));
+}
+// Sum sizes bottom-up and sort each folder largest first (done once).
+(function finalize(n) {
+  if (!n.kids) return;
+  let s = 0, fr = 0;
+  for (const c of n.kids) { finalize(c); s += c.size; fr += c.frees; }
+  n.size = s; n.frees = fr;
+  n.kids.sort((a, b) => b.size - a.size || a.name.localeCompare(b.name));
+})(root);
+const FILE_COUNT = nodes.reduce((k, n) => k + (n.kids ? 0 : 1), 0);
+
+// File types: the top 12 by size get colors, the rest are gray.
+const typeOf = new Map();
+for (const n of nodes) if (!n.kids) {
+  let t = typeOf.get(n.ext);
+  if (!t) { t = { ext: n.ext, size: 0, count: 0, idx: 0 }; typeOf.set(n.ext, t); }
+  t.size += n.size; t.count++;
+}
+const TYPES = [...typeOf.values()].sort((a, b) => b.size - a.size);
+TYPES.forEach((t, i) => { t.idx = i; });
+const typeIdx = new Int32Array(nodes.length).fill(-1);
+for (const n of nodes) if (!n.kids) typeIdx[n.id] = typeOf.get(n.ext).idx;
+
+// ===================================================================
+// 3. Formatting helpers
+// ===================================================================
+function fmtSize(b) {
+  if (b >= 1e11) return (b / 1e9).toFixed(0) + ' GB';
+  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB';
+  if (b >= 1e6) return (b / 1e6).toFixed(b >= 1e8 ? 0 : 1) + ' MB';
+  if (b >= 1e3) return (b / 1e3).toFixed(0) + ' KB';
+  return b + ' B';
+}
+function fmtPct(p) { return p >= 99.95 ? '100%' : p >= 0.05 || p === 0 ? p.toFixed(1) + '%' : '<0.1%'; }
+function esc(s) { return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]); }
+function pathOf(n) { const parts = []; for (let p = n; p.parent; p = p.parent) parts.push(p.name); return '/' + parts.reverse().join('/'); }
+function extLabel(e) { return e ? '.' + e : '(no extension)'; }
+function rgb(hexColor) { const v = parseInt(hexColor.slice(1), 16); return [(v >> 16) & 255, (v >> 8) & 255, v & 255]; }
+const STATUS = '386 GB used · 64 GB free · 12 GB not counted · 3 folders unreadable';
+
+// ===================================================================
+// 4. The cushion treemap engine (shared by all 5 looks)
+//    Layout: squarified treemaps (Bruls, Huizing, van Wijk 2000).
+//    Shading: cushion treemaps (van Wijk, van de Wetering 1999).
+// ===================================================================
+
+// Squarify: lay kids (sorted largest first) into the rect x,y,w,h.
+// Rows go along the shorter side; a row grows while its worst aspect ratio improves.
+function squarify(kids, x, y, w, h, place) {
+  let count = 0, total = 0;
+  while (count < kids.length && kids[count].size > 0) { total += kids[count].size; count++; }
+  if (count === 0 || w <= 0 || h <= 0) return;
+  const scale = (w * h) / total; // area per byte
+  let i = 0;
+  while (i < count) {
+    const side = Math.min(w, h), side2 = side * side;
+    const maxA = kids[i].size * scale;
+    let rowSum = 0, best = Infinity, j = i;
+    while (j < count) {
+      const a = kids[j].size * scale; // smallest so far, since kids are sorted
+      const s = rowSum + a;
+      const worst = Math.max((side2 * maxA) / (s * s), (s * s) / (side2 * a));
+      if (worst > best) break;
+      best = worst; rowSum = s; j++;
+    }
+    const last = j === count;
+    if (w >= h) { // row is a column at the left
+      const cw = last ? w : rowSum / h;
+      let yy = y;
+      for (let k = i; k < j; k++) {
+        const kh = k === j - 1 ? y + h - yy : (kids[k].size * scale) / cw;
+        place(kids[k], x, yy, cw, kh); yy += kh;
+      }
+      x += cw; w -= cw;
+    } else { // row is a strip at the top
+      const rh = last ? h : rowSum / w;
+      let xx = x;
+      for (let k = i; k < j; k++) {
+        const kw = k === j - 1 ? x + w - xx : (kids[k].size * scale) / rh;
+        place(kids[k], xx, y, kw, rh); xx += kw;
+      }
+      y += rh; h -= rh;
+    }
+    i = j;
+  }
+}
+
+// Run the layout once for a canvas of W x H device pixels.
+// Each node gets a rect; each file also gets its cushion surface
+// z(x,y) = s2x*x^2 + s1x*x + s2y*y^2 + s1y*y, built by adding one
+// parabolic ridge per nesting level, with height h shrinking by factor f.
+function layoutMap(W, H, h0, f) {
+  const N = nodes.length;
+  const rect = new Float64Array(N * 4);
+  const coef = new Float64Array(N * 4);
+  const leaves = [];
+  function addRidges(s, x0, y0, x1, y1, h) {
+    const w = x1 - x0, hh = y1 - y0;
+    return [s[0] + 4 * h * (x1 + x0) / w, s[1] - 4 * h / w, s[2] + 4 * h * (y1 + y0) / hh, s[3] - 4 * h / hh];
+  }
+  function lay(n, x0, y0, x1, y1, h, s) {
+    const i = n.id * 4;
+    rect[i] = x0; rect[i + 1] = y0; rect[i + 2] = x1; rect[i + 3] = y1;
+    if (x1 - x0 <= 1e-9 || y1 - y0 <= 1e-9) return;
+    const t = addRidges(s, x0, y0, x1, y1, h);
+    if (!n.kids) { coef[i] = t[0]; coef[i + 1] = t[1]; coef[i + 2] = t[2]; coef[i + 3] = t[3]; leaves.push(n.id); return; }
+    squarify(n.kids, x0, y0, x1 - x0, y1 - y0, (c, cx, cy, cw, ch) => lay(c, cx, cy, cx + cw, cy + ch, h * f, t));
+  }
+  lay(root, 0, 0, W, H, h0, [0, 0, 0, 0]);
+  return { W, H, rect, coef, leaves: Int32Array.from(leaves) };
+}
+
+// Shade every pixel of every file box. Intensity = Ia + Is * max(0, cos),
+// where cos is the angle between the surface normal and the light.
+// hiType >= 0 dims every file that is not of that type.
+function shadeMap(px, L, look, hiType) {
+  const { W, H, rect, coef, leaves } = L;
+  const c = look.cushion;
+  const lv = c.light, ln = Math.hypot(lv[0], lv[1], lv[2]);
+  const lx = lv[0] / ln, ly = lv[1] / ln, lz = lv[2] / ln;
+  const Ia = c.Ia, Is = c.Is;
+  const pal = look.pal.map(rgb), other = rgb(look.other), dim = rgb(look.dim), bg = rgb(look.bg);
+  for (let p = 0; p < px.length; p += 4) { px[p] = bg[0]; px[p + 1] = bg[1]; px[p + 2] = bg[2]; px[p + 3] = 255; }
+  const nxRow = new Float64Array(W);
+  for (let k = 0; k < leaves.length; k++) {
+    const id = leaves[k], i = id * 4;
+    const x0 = Math.max(0, Math.round(rect[i])), x1 = Math.min(W, Math.round(rect[i + 2]));
+    const y0 = Math.max(0, Math.round(rect[i + 1])), y1 = Math.min(H, Math.round(rect[i + 3]));
+    if (x1 <= x0 || y1 <= y0) continue;
+    const s1x = coef[i], s2x = coef[i + 1], s1y = coef[i + 2], s2y = coef[i + 3];
+    const t = typeIdx[id];
+    const col = hiType >= 0 && t !== hiType ? dim : (t < 12 ? pal[t] : other);
+    const R = col[0], G = col[1], B = col[2];
+    for (let x = x0; x < x1; x++) nxRow[x] = -(2 * s2x * (x + 0.5) + s1x);
+    for (let y = y0; y < y1; y++) {
+      const ny = -(2 * s2y * (y + 0.5) + s1y);
+      const nyl = ny * ly + lz, ny2 = ny * ny + 1;
+      let p = (y * W + x0) * 4;
+      for (let x = x0; x < x1; x++, p += 4) {
+        const nx = nxRow[x];
+        const cos = (nx * lx + nyl) / Math.sqrt(nx * nx + ny2);
+        const v = cos > 0 ? Ia + Is * cos : Ia;
+        px[p] = R * v; px[p + 1] = G * v; px[p + 2] = B * v; // Uint8ClampedArray clamps to 0..255
+      }
+    }
+  }
+}
+
+// Find the deepest node under a device-pixel point.
+function hitTest(L, x, y) {
+  let n = root;
+  if (x < 0 || y < 0 || x >= L.W || y >= L.H) return null;
+  for (;;) {
+    if (!n.kids) return n;
+    let next = null;
+    for (const c of n.kids) {
+      const i = c.id * 4;
+      if (x >= L.rect[i] && x < L.rect[i + 2] && y >= L.rect[i + 1] && y < L.rect[i + 3]) { next = c; break; }
+    }
+    if (!next) return n;
+    n = next;
+  }
+}
+
+// ===================================================================
+// 5. The 5 looks: only spacing, type, chrome, palette and cushion differ
+// ===================================================================
+const LIGHT = [-1, -2, 10]; // light from the top left, as in the cushion paper
+const LOOKS = [
+  { key: 'a', name: 'A. Faithful',
+    note: 'Closest to WinDirStat and the quickest to read for its fans; the bright colors and boxed panes look dated next to current Mac apps.',
+    pal: ['#2a52e6', '#e5332a', '#22b33c', '#1fc0d6', '#cf38cf', '#e6cc1f', '#8f8ff2', '#f08c8c', '#8ede8e', '#8ee3ec', '#ec8eec', '#efe48e'],
+    other: '#a3a3a3', dim: '#4d4d4d', bg: '#808080', cushion: { h: .5, f: .75, Ia: .2, Is: .85, light: LIGHT },
+    icons: true, indent: 14, open: [] },
+  { key: 'b', name: 'B. Quiet native',
+    note: 'Feels like Finder and is calm to live with; roomy rows show fewer folders, and the soft colors make file types harder to tell apart.',
+    pal: ['#78a5e2', '#ee9a88', '#8fc993', '#ecca76', '#b9a1de', '#78c7c8', '#eaa6c3', '#b1bf76', '#9bb2d8', '#dcae86', '#a3d2ef', '#cfabab'],
+    other: '#cacace', dim: '#e2e2e6', bg: '#f2f2f4', cushion: { h: .3, f: .72, Ia: .42, Is: .62, light: LIGHT },
+    icons: true, indent: 16, open: [] },
+  { key: 'c', name: 'C. Dark instrument',
+    note: 'The map glows and every number lines up in columns; strong cushions show nesting best, but light mode would need a second full design.',
+    pal: ['#3d8bff', '#ff4f6e', '#2fe0a0', '#ffb326', '#b072ff', '#26d4f0', '#ff7cc8', '#a6e83a', '#ff8a3d', '#7a84ff', '#4ff0d0', '#f5e24a'],
+    other: '#5b6272', dim: '#24272d', bg: '#0b0c0e', cushion: { h: .85, f: .8, Ia: .1, Is: 1.08, light: LIGHT },
+    icons: false, indent: 14, open: [] },
+  { key: 'd', name: 'D. No lines',
+    note: 'The cleanest and most modern; without dividers the panes can blur together, and the size bars take width from long names.',
+    pal: ['#4f7cff', '#ff6b5b', '#2fbf71', '#ffb547', '#9b6bff', '#1fb6c9', '#ff7eb3', '#8ab83a', '#6a7fa8', '#e08a3c', '#7fb0ff', '#c46fd8'],
+    other: '#d2d2d7', dim: '#ececf0', bg: '#f4f4f6', cushion: { h: .2, f: .7, Ia: .5, Is: .52, light: LIGHT },
+    icons: false, bars: true, indent: 16, titles: true, open: [] },
+  { key: 'e', name: 'E. Dense',
+    note: 'Shows the most rows and numbers at once for a huge disk; the small text tires the eye and the rows are hard targets to click.',
+    pal: ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f', '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#86bcb6', '#d4a6c8', '#8cd17d'],
+    other: '#a8a8a8', dim: '#d6d6d6', bg: '#888888', cushion: { h: .42, f: .75, Ia: .25, Is: .8, light: LIGHT },
+    icons: false, indent: 11,
+    open: ['/Users/alex/Library', '/Users/alex/Library/Developer', '/Users/alex/Pictures', '/Applications', '/Users/alex/Movies'] },
+];
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+const byPath = new Map(nodes.filter(n => n.kids).map(n => [pathOf(n), n]));
+
+function buildLook(look) {
+  const card = document.createElement('section');
+  card.className = 'card';
+  card.innerHTML = `
+    <div class="stage">
+      <div class="win look-${look.key}" role="img" aria-label="${esc(look.name)} mockup">
+        <div class="tb"><div class="lights"><i></i><i></i><i></i></div><div class="title">Macintosh HD</div></div>
+        <div class="panes">
+          <div class="pane tree"><div class="ptitle">Folders</div>
+            <div class="hdr"><span>Name</span><span class="num">Size</span><span class="num">Frees</span><span class="num">%</span></div>
+            <div class="body"></div></div>
+          <div class="pane types"><div class="ptitle">File types</div>
+            <div class="hdr"><span></span><span>Extension</span><span class="num">Size</span><span class="num">%</span></div>
+            <div class="body"></div></div>
+        </div>
+        <div class="map"><div class="frame"></div></div>
+        <div class="status"><span>${STATUS}</span></div>
+      </div>
+    </div>
+    <h2>${esc(look.name)}</h2>
+    <p class="note">${esc(look.note)}</p>
+    <p class="meta"></p>`;
+  document.getElementById('grid').appendChild(card);
+
+  const stage = card.querySelector('.stage'), win = card.querySelector('.win');
+  const treeBody = card.querySelector('.tree .body'), typesBody = card.querySelector('.types .body');
+  const mapEl = card.querySelector('.map'), frame = mapEl.querySelector('.frame');
+  const canvas = document.querySelector(`#canvases canvas[data-look="${look.key}"]`);
+  if (!canvas) throw new Error(`Look ${look.key}: its canvas is missing`);
+  mapEl.prepend(canvas);
+  const status = card.querySelector('.status span'), meta = card.querySelector('.meta');
+  const st = { sel: -1, hiType: -1, open: new Set([root.id, byPath.get('/Users').id, byPath.get('/Users/alex').id]), L: null, base: null };
+  for (const p of look.open) { const n = byPath.get(p); if (!n) throw new Error(`Look ${look.key}: no folder ${p}`); st.open.add(n.id); }
+
+  // Scale the 1180 x 760 window to its column.
+  const fit = () => win.style.setProperty('--s', String(stage.clientWidth / 1180));
+  fit();
+  new ResizeObserver(fit).observe(stage);
+
+  // ---- tree list ----
+  function rowHTML(n) {
+    const hasKids = !!n.kids && n.kids.length > 0, open = st.open.has(n.id);
+    const tw = `<span class="tw"${hasKids ? ' data-tw="1"' : ''}>${hasKids ? (open ? '▾' : '▸') : ''}</span>`;
+    const ic = look.icons ? `<span class="ic ${n.kids ? 'dir' : 'file'}"></span>` : '';
+    const pct = n.parent ? (n.size / n.parent.size) * 100 : 100;
+    const pctTxt = n.unreadable ? '' : fmtPct(pct);
+    const pctCell = look.bars
+      ? `<span class="num pc">${n.unreadable ? '' : `<span class="bar"><i style="width:${pct.toFixed(1)}%"></i></span>`}${pctTxt}</span>`
+      : `<span class="num">${pctTxt}</span>`;
+    const cls = `row d${Math.min(n.depth, 3)}${st.sel === n.id ? ' sel' : ''}${n.unreadable ? ' unr' : ''}`;
+    return `<div class="${cls}" data-id="${n.id}"><span class="nm" style="padding-left:${n.depth * look.indent}px">${tw}${ic}<span class="tx">${esc(n.name)}</span></span>`
+      + `<span class="num">${n.unreadable ? '<em>unreadable</em>' : fmtSize(n.size)}</span><span class="num">${n.unreadable ? '' : fmtSize(n.frees)}</span>${pctCell}</div>`;
+  }
+  function renderTree() {
+    const out = [];
+    (function walk(n) { out.push(rowHTML(n)); if (n.kids && st.open.has(n.id)) for (const c of n.kids) walk(c); })(root);
+    treeBody.innerHTML = out.join('');
+  }
+  function scrollToRow(id) {
+    const row = treeBody.querySelector(`[data-id="${id}"]`);
+    if (!row) throw new Error(`Look ${look.key}: row ${id} is not in the tree`);
+    const top = row.offsetTop, bottom = top + row.offsetHeight;
+    if (top < treeBody.scrollTop || bottom > treeBody.scrollTop + treeBody.clientHeight) treeBody.scrollTop = top - treeBody.clientHeight / 2 + row.offsetHeight / 2;
+  }
+  treeBody.addEventListener('click', e => {
+    const row = e.target.closest('.row'); if (!row) return;
+    const n = nodes[Number(row.dataset.id)];
+    if (e.target.closest('[data-tw]')) { st.open.has(n.id) ? st.open.delete(n.id) : st.open.add(n.id); renderTree(); return; }
+    select(n, false);
+  });
+  treeBody.addEventListener('dblclick', e => {
+    const row = e.target.closest('.row'); if (!row) return;
+    const n = nodes[Number(row.dataset.id)];
+    if (n.kids && n.kids.length) { st.open.has(n.id) ? st.open.delete(n.id) : st.open.add(n.id); renderTree(); }
+  });
+
+  // ---- file types list ----
+  function renderTypes() {
+    typesBody.innerHTML = TYPES.map(t => {
+      const color = t.idx < 12 ? look.pal[t.idx] : look.other;
+      return `<div class="row${st.hiType === t.idx ? ' sel' : ''}" data-t="${t.idx}"><span><i class="sw" style="background:${color};--glow:${t.idx < 12 ? color + '88' : 'transparent'}"></i></span>`
+        + `<span>${esc(extLabel(t.ext))}</span><span class="num">${fmtSize(t.size)}</span><span class="num">${fmtPct((t.size / root.size) * 100)}</span></div>`;
+    }).join('');
+  }
+  typesBody.addEventListener('click', e => {
+    const row = e.target.closest('.row'); if (!row) return;
+    const t = Number(row.dataset.t);
+    st.hiType = st.hiType === t ? -1 : t;
+    renderTypes();
+    paint();
+  });
+
+  // ---- map ----
+  const ctx = canvas.getContext('2d');
+  function paint() {
+    const t0 = performance.now();
+    if (st.hiType < 0 && st.base) { ctx.putImageData(st.base, 0, 0); return performance.now() - t0; }
+    const img = ctx.createImageData(st.L.W, st.L.H);
+    shadeMap(img.data, st.L, look, st.hiType);
+    ctx.putImageData(img, 0, 0);
+    if (st.hiType < 0) st.base = img;
+    return performance.now() - t0;
+  }
+  function firstDraw() {
+    const t0 = performance.now();
+    const W = Math.round(mapEl.offsetWidth * DPR), H = Math.round(mapEl.offsetHeight * DPR);
+    canvas.width = W; canvas.height = H;
+    st.L = layoutMap(W, H, look.cushion.h, look.cushion.f);
+    const tLayout = performance.now() - t0;
+    paint();
+    const ms = performance.now() - t0;
+    canvas.dataset.ms = ms.toFixed(1);
+    meta.textContent = `Map: ${W} × ${H} pixels, drawn in ${Math.round(ms)} ms (layout ${Math.round(tLayout)} ms). ${FILE_COUNT.toLocaleString('en-US')} files, sample data.`;
+    if (ms >= 300) console.error(`Look ${look.key}: map took ${ms.toFixed(0)} ms, over the 300 ms budget`);
+  }
+  function placeFrame(n) {
+    const i = n.id * 4, r = st.L.rect;
+    let x = r[i] / DPR, y = r[i + 1] / DPR, w = (r[i + 2] - r[i]) / DPR, h = (r[i + 3] - r[i + 1]) / DPR;
+    if (!(w > 0 && h > 0)) { frame.style.display = 'none'; return; }
+    const min = 6; // keep tiny boxes visible
+    if (w < min) { x -= (min - w) / 2; w = min; }
+    if (h < min) { y -= (min - h) / 2; h = min; }
+    Object.assign(frame.style, { display: 'block', left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+  }
+  function select(n, fromMap) {
+    st.sel = n.id;
+    for (let p = n.parent; p; p = p.parent) st.open.add(p.id);
+    renderTree();
+    if (fromMap) scrollToRow(n.id);
+    placeFrame(n);
+  }
+  function devPoint(e) {
+    const r = canvas.getBoundingClientRect();
+    return [((e.clientX - r.left) / r.width) * canvas.width, ((e.clientY - r.top) / r.height) * canvas.height];
+  }
+  mapEl.addEventListener('mousemove', e => {
+    const n = hitTest(st.L, ...devPoint(e));
+    status.textContent = n ? `${pathOf(n)} · ${fmtSize(n.size)}` : STATUS;
+  });
+  mapEl.addEventListener('mouseleave', () => { status.textContent = STATUS; });
+  mapEl.addEventListener('click', e => { const n = hitTest(st.L, ...devPoint(e)); if (n) select(n, true); });
+
+  renderTree();
+  renderTypes();
+  return firstDraw;
+}
+
+// Build all windows first, then draw one map per task so the page appears fast.
+const draws = LOOKS.map(buildLook);
+let k = 0;
+(function next() { if (k < draws.length) { draws[k++](); setTimeout(next, 0); } })();
+</script>
+</body>
+</html>
