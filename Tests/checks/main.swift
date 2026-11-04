@@ -94,6 +94,19 @@ do {
         return map.hitTest(x: r.x + r.width / 2, y: r.y + r.height / 2) == id
     }
     check("bug: grid lookup off by one; center hits its box", centersHit)
+    if let png = mapTree.extensions.firstIndex(where: { $0.name == "png" }),
+       let node = ids.first(where: { mapTree.extensionIndex[Int($0)] == Int32(png) }),
+       let box = map.rect(of: node) {
+        var params = TreemapParams()
+        params.palette = [MapColor(255, 0, 0)]
+        params.otherColor = MapColor(0, 0, 255)
+        params.ambient = 1
+        params.diffuse = 0
+        var pixels: [UInt8] = []
+        Treemap.shade(map, into: &pixels, params: params)
+        let at = ((box.y + box.height / 2) * map.width + box.x + box.width / 2) * 4
+        check("types beyond palette use gray instead of repeating a color", pixels[at] == 0 && pixels[at + 2] == 255)
+    } else { check("types beyond palette use gray instead of repeating a color", false) }
 } catch { failures += 1; print("FAIL map setup: \(error)") }
 
 do {

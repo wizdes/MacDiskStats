@@ -18,6 +18,8 @@ public struct TreemapParams: Sendable {
     public var light: (Float, Float, Float) = (-0.35, -0.45, 0.82)
     public var palette: [MapColor] = [MapColor(67, 147, 220), MapColor(99, 185, 130), MapColor(230, 169, 73), MapColor(169, 122, 211), MapColor(220, 111, 117), MapColor(85, 187, 185)]
     public var otherColor = MapColor(120, 137, 155)
+    public var backgroundColor = MapColor(24, 29, 35)
+    public var folderEdgeFactor: Float = 0.72
     public init() {}
 }
 
@@ -30,6 +32,7 @@ public struct TreemapLayout: Sendable {
     public let surfaceX2: [Float], surfaceX: [Float], surfaceY2: [Float], surfaceY: [Float]
     public let colorIndex: [Int32]
     fileprivate let pixelOwner: [Int32]
+    fileprivate let folderEdge: [UInt8]
     private let tileOwner: [Int32]
     private let tileWidth: Int
     private let nodeBox: [Int32]
@@ -48,12 +51,12 @@ public struct TreemapLayout: Sendable {
         return i >= 0 ? nodeIDs[i] : nil
     }
 
-    fileprivate init(width: Int, height: Int, nodeIDs: [Int32], x: [Int32], y: [Int32], widths: [Int32], heights: [Int32], surfaceX2: [Float], surfaceX: [Float], surfaceY2: [Float], surfaceY: [Float], colorIndex: [Int32], pixelOwner: [Int32], nodeBox: [Int32]) {
+    fileprivate init(width: Int, height: Int, nodeIDs: [Int32], x: [Int32], y: [Int32], widths: [Int32], heights: [Int32], surfaceX2: [Float], surfaceX: [Float], surfaceY2: [Float], surfaceY: [Float], colorIndex: [Int32], pixelOwner: [Int32], folderEdge: [UInt8], nodeBox: [Int32]) {
         self.width = width; self.height = height; self.nodeIDs = nodeIDs
         self.x = x; self.y = y; self.widths = widths; self.heights = heights
         self.surfaceX2 = surfaceX2; self.surfaceX = surfaceX
         self.surfaceY2 = surfaceY2; self.surfaceY = surfaceY
-        self.colorIndex = colorIndex; self.pixelOwner = pixelOwner; self.nodeBox = nodeBox
+        self.colorIndex = colorIndex; self.pixelOwner = pixelOwner; self.folderEdge = folderEdge; self.nodeBox = nodeBox
         tileWidth = (width + 7) / 8
         var tiles = [Int32](repeating: -1, count: tileWidth * ((height + 7) / 8))
         if width > 0 && height > 0 {
@@ -85,9 +88,10 @@ public enum Treemap {
         var ids: [Int32] = [], xx: [Int32] = [], yy: [Int32] = [], ww: [Int32] = [], hh: [Int32] = []
         var ax: [Float] = [], bx: [Float] = [], ay: [Float] = [], by: [Float] = [], colors: [Int32] = []
         var owner = [Int32](repeating: -1, count: w * h)
+        var edges = [UInt8](repeating: 0, count: w * h)
         var nodeBox = [Int32](repeating: -1, count: tree.parent.count)
         guard rootNode >= 0, Int(rootNode) < tree.parent.count, tree.countedSize[Int(rootNode)] > 0, w > 0, h > 0 else {
-            return TreemapLayout(width: w, height: h, nodeIDs: ids, x: xx, y: yy, widths: ww, heights: hh, surfaceX2: ax, surfaceX: bx, surfaceY2: ay, surfaceY: by, colorIndex: colors, pixelOwner: owner, nodeBox: nodeBox)
+            return TreemapLayout(width: w, height: h, nodeIDs: ids, x: xx, y: yy, widths: ww, heights: hh, surfaceX2: ax, surfaceX: bx, surfaceY2: ay, surfaceY: by, colorIndex: colors, pixelOwner: owner, folderEdge: edges, nodeBox: nodeBox)
         }
         func add(_ node: Int32, _ r: Region, _ s: Surface, _ terminal: Bool) {
             guard r.w > 0, r.h > 0 else { return }
@@ -155,7 +159,13 @@ public enum Treemap {
             }
         }
         visit(rootNode, Region(x: 0, y: 0, w: w, h: h), Surface(), 0)
-        return TreemapLayout(width: w, height: h, nodeIDs: ids, x: xx, y: yy, widths: ww, heights: hh, surfaceX2: ax, surfaceX: bx, surfaceY2: ay, surfaceY: by, colorIndex: colors, pixelOwner: owner, nodeBox: nodeBox)
+        for i in ids.indices where ids[i] != rootNode && tree.flags[Int(ids[i])].contains(.isDir) {
+            let left = Int(xx[i]), top = Int(yy[i]), right = left + Int(ww[i]) - 1, bottom = top + Int(hh[i]) - 1
+            if right <= left || bottom <= top { continue }
+            for px in left...right { edges[top * w + px] = 1; edges[bottom * w + px] = 1 }
+            for py in top...bottom { edges[py * w + left] = 1; edges[py * w + right] = 1 }
+        }
+        return TreemapLayout(width: w, height: h, nodeIDs: ids, x: xx, y: yy, widths: ww, heights: hh, surfaceX2: ax, surfaceX: bx, surfaceY2: ay, surfaceY: by, colorIndex: colors, pixelOwner: owner, folderEdge: edges, nodeBox: nodeBox)
     }
 
     public static func shade(_ layout: TreemapLayout, into rgba: inout [UInt8], params: TreemapParams = TreemapParams(), highlightExtension: Int32? = nil) {
@@ -172,14 +182,15 @@ public enum Treemap {
                     for px in 0..<width {
                         let at = py * width + px, out = at * 4
                         let i = Int(layout.pixelOwner[at])
-                        if i < 0 { writer.pointer[out] = 24; writer.pointer[out+1] = 29; writer.pointer[out+2] = 35; writer.pointer[out+3] = 255; continue }
+                        if i < 0 { writer.pointer[out] = params.backgroundColor.r; writer.pointer[out+1] = params.backgroundColor.g; writer.pointer[out+2] = params.backgroundColor.b; writer.pointer[out+3] = 255; continue }
                         let type = layout.colorIndex[i]
-                        let color = type >= 0 && !params.palette.isEmpty ? params.palette[Int(type) % params.palette.count] : params.otherColor
+                        let color = type >= 0 && Int(type) < params.palette.count ? params.palette[Int(type)] : params.otherColor
                         let nx = -(2 * layout.surfaceX2[i] * Float(px) + layout.surfaceX[i])
                         let ny = -(2 * layout.surfaceY2[i] * Float(py) + layout.surfaceY[i])
                         let light = max(0, (nx * params.light.0 + ny * params.light.1 + params.light.2) / sqrt(nx * nx + ny * ny + 1))
                         let dim: Float = highlightExtension == nil || highlightExtension == type ? 1 : 0.22
-                        let value = min(1.3, max(0, params.ambient + params.diffuse * light)) * dim
+                        let edge = layout.folderEdge[at] == 0 ? Float(1) : params.folderEdgeFactor
+                        let value = min(1.3, max(0, params.ambient + params.diffuse * light)) * dim * edge
                         writer.pointer[out] = UInt8(min(255, Float(color.r) * value))
                         writer.pointer[out+1] = UInt8(min(255, Float(color.g) * value))
                         writer.pointer[out+2] = UInt8(min(255, Float(color.b) * value))

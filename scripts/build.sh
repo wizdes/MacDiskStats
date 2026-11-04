@@ -10,10 +10,31 @@ export TMPDIR="$(cd "$out/tmp" && pwd)/"
 export CLANG_MODULE_CACHE_PATH="$(cd "$out/module-cache" && pwd)"
 start=$SECONDS
 opt=()
-if [[ "$mode" == release ]]; then opt=(-O -wmo); else opt=(-Onone -g -wmo); fi
+if [[ "$mode" == release ]]; then opt=(-O -wmo); else opt=(-Onone -g -wmo -D DEBUG); fi
 swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -parse-as-library -emit-module -emit-object -module-name DiskCore Sources/DiskCore/*.swift -emit-module-path "$out/DiskCore.swiftmodule" -o "$out/DiskCore.o"
 libtool -static -o "$out/libDiskCore.a" "$out/DiskCore.o"
 swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Sources/cushion-bench/*.swift "$out/libDiskCore.a" -o "$out/cushion-bench"
 swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Tools/cushion-map/*.swift "$out/libDiskCore.a" -o "$out/cushion-map"
 swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Tests/checks/*.swift "$out/libDiskCore.a" -o "$out/checks"
+app="$out/Cushion.app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cat > "$app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>dev.yili.Cushion</string>
+<key>CFBundleName</key><string>Cushion</string>
+<key>CFBundleDisplayName</key><string>Cushion</string>
+<key>CFBundleExecutable</key><string>Cushion</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>LSMinimumSystemVersion</key><string>15.0</string>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLIST
+swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Sources/CushionApp/*.swift "$out/libDiskCore.a" -framework AppKit -framework QuickLookUI -o "$app/Contents/MacOS/Cushion"
+if [[ "$mode" == release ]]; then
+  codesign --force --sign "${CUSHION_SIGN_ID:--}" --entitlements Resources/Cushion.entitlements "$app"
+else
+  codesign --force --sign - "$app"
+fi
 echo "build $mode: $((SECONDS-start)) seconds"
