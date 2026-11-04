@@ -5,7 +5,7 @@ if rg -n --glob '*.swift' --glob '!DebugSnapshot.swift' "$pattern" Sources; then
   echo 'FAIL: Sources contains a file-changing call' >&2
   exit 1
 fi
-if rg -n --glob '*.swift' 'DebugSnapshot|#if DEBUG' Sources/CushionApp | rg -v 'Sources/CushionApp/(Main|DebugSnapshot)\.swift'; then
+if rg -n --glob '*.swift' 'DebugSnapshot|#if DEBUG' Sources/MacDiskStatsApp | rg -v 'Sources/MacDiskStatsApp/(Main|DebugSnapshot)\.swift'; then
   echo 'FAIL: debug write code leaked into another app file' >&2
   exit 1
 fi

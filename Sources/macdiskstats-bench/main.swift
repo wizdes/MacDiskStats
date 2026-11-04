@@ -3,7 +3,7 @@ import Darwin
 import DiskCore
 
 let args = Array(CommandLine.arguments.dropFirst())
-guard let path = args.first else { print("usage: cushion-bench <path> [--no-private] [--json] [--top N]"); exit(2) }
+guard let path = args.first else { print("usage: macdiskstats-bench <path> [--no-private] [--json] [--top N]"); exit(2) }
 let top = args.firstIndex(of: "--top").flatMap { $0 + 1 < args.count ? Int(args[$0 + 1]) : nil } ?? 0
 let workers = args.firstIndex(of: "--workers").flatMap { $0 + 1 < args.count ? Int(args[$0 + 1]) : nil } ?? 16
 let started = Date()

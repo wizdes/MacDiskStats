@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 import DiskCore
 
 let args = Array(CommandLine.arguments.dropFirst())
-guard args.count >= 2 else { fputs("usage: cushion-map <path> <out.png> [--width W --height H]\n", stderr); exit(2) }
+guard args.count >= 2 else { fputs("usage: macdiskstats-map <path> <out.png> [--width W --height H]\n", stderr); exit(2) }
 func dimension(_ flag: String, default value: Int) -> Int {
     guard let i = args.firstIndex(of: flag), i + 1 < args.count, let n = Int(args[i + 1]), n > 0 else { return value }
     return n

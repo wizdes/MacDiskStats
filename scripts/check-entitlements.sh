@@ -2,7 +2,7 @@
 set -euo pipefail
 python3 - <<'PY'
 import plistlib
-with open('Resources/Cushion.entitlements', 'rb') as f:
+with open('Resources/MacDiskStats.entitlements', 'rb') as f:
     entitlements = plistlib.load(f)
 assert entitlements == {
     'com.apple.security.app-sandbox': True,

@@ -154,5 +154,7 @@ Approving this plan approves these outward steps at M7:
 
 ## Changes after approval (2026-11-04, user instructions)
 
+- **Name:** The app is now MacDiskStats.
+
 - **Main thread only coordinates.** Sol builds everything through the runner. Astra does all reviews and design critique. No native Opus builders or reviewers, to save Claude tokens.
 - **No SwiftPM or Xcode.** Neither runs in the runner's sandbox; plain `swiftc` does (tested). `scripts/build.sh` calls `swiftc`, assembles the `.app`, and signs it. Tests are a small `checks` executable, not XCTest. Root runs only what the sandbox cannot: whole-disk measures, signing, release.

@@ -8,7 +8,7 @@ var checks = 0
     checks += 1
     if condition() { print("PASS \(name)") } else { failures += 1; print("FAIL \(name)") }
 }
-let base = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp", isDirectory: true).appendingPathComponent("cushion-checks-\(getpid())", isDirectory: true)
+let base = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp", isDirectory: true).appendingPathComponent("macdiskstats-checks-\(getpid())", isDirectory: true)
 let fm = FileManager.default
 try fm.createDirectory(at: base, withIntermediateDirectories: true)
 defer { try? fm.removeItem(at: base) }
@@ -94,6 +94,13 @@ do {
         return map.hitTest(x: r.x + r.width / 2, y: r.y + r.height / 2) == id
     }
     check("bug: grid lookup off by one; center hits its box", centersHit)
+    let ridgeScale = ids.allSatisfy { id -> Bool in
+        guard let box = map.rect(of: id), let i = map.nodeIDs.firstIndex(of: id), box.width > 0, box.height > 0 else { return false }
+        let expectedX = -4 * TreemapParams().ridgeHeight / Float(box.width)
+        let expectedY = -4 * TreemapParams().ridgeHeight / Float(box.height)
+        return abs(map.surfaceX2[i] - expectedX) < 0.001 && abs(map.surfaceY2[i] - expectedY) < 0.001
+    }
+    check("bug: cushion ridge follows van Wijk height equation", ridgeScale)
     if let png = mapTree.extensions.firstIndex(where: { $0.name == "png" }),
        let node = ids.first(where: { mapTree.extensionIndex[Int($0)] == Int32(png) }),
        let box = map.rect(of: node) {

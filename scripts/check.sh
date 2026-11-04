@@ -1,6 +1,6 @@
 #!/bin/zsh
 set -euo pipefail
-out=${CUSHION_BUILD_OUT:-build}
+out=${MACDISKSTATS_BUILD_OUT:-build}
 start=$SECONDS
 scripts/build.sh debug --out "$out"
 "$out/checks" | tee "$out/check-output.txt"

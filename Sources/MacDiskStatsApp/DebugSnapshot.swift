@@ -4,8 +4,8 @@ import AppKit
 @MainActor enum DebugSnapshot {
     static func capture(window: NSWindow, path: String) {
         let container = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Containers/dev.yili.Cushion/Data/Library/Application Support", isDirectory: true)
-        let allowed = ProcessInfo.processInfo.environment["CUSHION_SNAPSHOT_DIR"] ?? container.path
+            .appendingPathComponent("Library/Containers/dev.yili.MacDiskStats/Data/Library/Application Support", isDirectory: true)
+        let allowed = ProcessInfo.processInfo.environment["MACDISKSTATS_SNAPSHOT_DIR"] ?? container.path
         let destination = URL(fileURLWithPath: path).standardizedFileURL
         guard !allowed.isEmpty, destination.path.hasPrefix(URL(fileURLWithPath: allowed).standardizedFileURL.path + "/") else {
             fputs("snapshot path is outside the allowed directory\n", stderr)
@@ -20,7 +20,7 @@ import AppKit
         view.cacheDisplay(in: rect, to: rep)
         guard let png = rep.representation(using: .png, properties: [:]) else { NSApp.terminate(nil); return }
         do {
-            if ProcessInfo.processInfo.environment["CUSHION_SNAPSHOT_DIR"] == nil {
+            if ProcessInfo.processInfo.environment["MACDISKSTATS_SNAPSHOT_DIR"] == nil {
                 try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
             }
             try png.write(to: destination)

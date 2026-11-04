@@ -108,8 +108,8 @@ public enum Treemap {
         }
         func ridge(_ s: Surface, _ r: Region, _ height: Float) -> Surface {
             var z = s
-            if r.w > 0 { let k = height / Float(r.w); z.x2 -= k; z.x += k * Float(2 * r.x + r.w) }
-            if r.h > 0 { let k = height / Float(r.h); z.y2 -= k; z.y += k * Float(2 * r.y + r.h) }
+            if r.w > 0 { let k = 4 * height / Float(r.w); z.x2 -= k; z.x += k * Float(2 * r.x + r.w) }
+            if r.h > 0 { let k = 4 * height / Float(r.h); z.y2 -= k; z.y += k * Float(2 * r.y + r.h) }
             return z
         }
         func worst(_ sizes: [Int64], _ start: Int, _ end: Int, _ short: Double, _ scale: Double) -> Double {

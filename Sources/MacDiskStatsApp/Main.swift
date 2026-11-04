@@ -3,7 +3,7 @@ import DiskCore
 import QuickLookUI
 
 @MainActor
-final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTableViewDataSource, NSTableViewDelegate, @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate {
+final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTableViewDataSource, NSTableViewDelegate, @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate {
     private var window: NSWindow!
     private var content: NSView!
     private var startView: NSView?
@@ -35,6 +35,9 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
     private var snapshotPath: String?
     private var snapshotAppearance: String?
     private var volumeFreeBytes: Int64 = 0
+    #if DEBUG
+    private var measurePending = false
+    #endif
     private var dark: Bool { window?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -50,7 +53,7 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
         }
         content = NSView(frame: NSRect(origin: .zero, size: Tokens.windowSize))
         window = NSWindow(contentRect: NSRect(origin: .zero, size: Tokens.windowSize), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "Cushion"
+        window.title = "MacDiskStats"
         window.minSize = NSSize(width: Tokens.minTreeWidth + Tokens.minTypesWidth, height: Tokens.minTopHeight + Tokens.minMapHeight + Tokens.statusHeight)
         window.center()
         window.delegate = self
@@ -69,6 +72,9 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
     private func parseArguments() {
         let args = CommandLine.arguments
         for i in args.indices {
+            #if DEBUG
+            if args[i] == "--measure" { measurePending = true; continue }
+            #endif
             guard i + 1 < args.count else { continue }
             switch args[i] {
             case "--scan": rootPath = args[i + 1]
@@ -82,8 +88,8 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
 
     private func buildMenu() {
         let bar = NSMenu()
-        let app = NSMenuItem(); let appMenu = NSMenu(title: "Cushion")
-        appMenu.addItem(withTitle: "Quit Cushion", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let app = NSMenuItem(); let appMenu = NSMenu(title: "MacDiskStats")
+        appMenu.addItem(withTitle: "Quit MacDiskStats", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         app.submenu = appMenu; bar.addItem(app)
         let file = NSMenuItem(); let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "Choose Folder…", action: #selector(chooseFolder), keyEquivalent: "o").target = self
@@ -113,7 +119,7 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
         let title = label("Choose a disk to scan", font: Tokens.startTitleFont, color: Tokens.text(dark))
         title.frame = NSRect(x: Tokens.inset, y: view.bounds.height - Tokens.startTopInset, width: Tokens.startWidth, height: Tokens.startSpacing * 2)
         title.autoresizingMask = [.minYMargin]; view.addSubview(title)
-        let note = label("Cushion reads file names and sizes. It never changes your files.", font: Tokens.startDetailFont, color: Tokens.muted(dark))
+        let note = label("MacDiskStats reads file names and sizes. It never changes your files.", font: Tokens.startDetailFont, color: Tokens.muted(dark))
         note.frame = NSRect(x: Tokens.inset, y: title.frame.minY - Tokens.startSpacing * 2, width: Tokens.startWidth, height: Tokens.startSpacing * 2)
         note.autoresizingMask = [.minYMargin]; view.addSubview(note)
         let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey], options: [.skipHiddenVolumes]) ?? []
@@ -168,7 +174,7 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
             return self?.contextMenu()
         }
         outline.dataSource = self; outline.delegate = self; outline.allowsEmptySelection = true
-        outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         for (name, width) in Tokens.treeColumns {
             let c = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(name)); c.title = name; c.width = width
             c.headerCell.font = Tokens.headerFont
@@ -182,6 +188,7 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
         let typeScroll = NSScrollView(frame: .zero); typeScroll.hasVerticalScroller = true; typeScroll.autohidesScrollers = true
         types = NSTableView(frame: .zero); types.rowHeight = Tokens.rowHeight; types.headerView = NSTableHeaderView()
         types.dataSource = self; types.delegate = self
+        types.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         for (name, width) in Tokens.typeColumns {
             let c = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(name)); c.title = name; c.width = width
             c.headerCell.font = Tokens.headerFont
@@ -216,7 +223,7 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
             showError("Could not read free space for \(path): \(error.localizedDescription)")
         }
         buildScanView(); isScanning = true
-        window.title = URL(fileURLWithPath: path).lastPathComponent
+        window.title = "MacDiskStats — \(URL(fileURLWithPath: path).lastPathComponent)"
         status.stringValue = "Scanning \(path)…"
         scanTask = Task { [weak self] in
             guard let self else { return }
@@ -251,7 +258,7 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
         status.stringValue = "Scan cancelled. Choose a folder to scan again."
     }
     private func showError(_ message: String) {
-        let alert = NSAlert(); alert.messageText = "Cushion could not finish"; alert.informativeText = message
+        let alert = NSAlert(); alert.messageText = "MacDiskStats could not finish"; alert.informativeText = message
         alert.beginSheetModal(for: window)
     }
 
@@ -285,6 +292,12 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
             self.mapView.show(rendered.1, width: width, height: height)
             self.mapView.selectedNode = self.selectedNode
             self.makeSnapshotIfNeeded()
+            #if DEBUG
+            if self.measurePending {
+                self.measurePending = false
+                Task { await self.measureUI() }
+            }
+            #endif
         }
     }
 
@@ -294,17 +307,22 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
         while ancestor > 0 && ancestor != zoomNode { ancestor = tree.parent[Int(ancestor)] }
         if ancestor != zoomNode {
             zoomNode = 0
-            window.title = tree.rootPath
+            window.title = "MacDiskStats — \(tree.rootPath)"
             renderMap()
         }
         selectedNode = id; mapView.selectedNode = id; updateStatus()
         if fromMap {
             var ancestors: [Int32] = []; var parent = tree.parent[Int(id)]
-            while parent >= 0 { ancestors.append(parent); parent = tree.parent[Int(parent)] }
+            while parent > 0 { ancestors.append(parent); parent = tree.parent[Int(parent)] }
             selecting = true
-            for item in ancestors.reversed() { outline.expandItem(NSNumber(value: item)) }
+            outline.beginUpdates()
+            for item in ancestors.reversed() where !outline.isItemExpanded(NSNumber(value: item)) { outline.expandItem(NSNumber(value: item)) }
+            outline.endUpdates()
             let row = outline.row(forItem: NSNumber(value: id))
-            if row >= 0 { outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); outline.scrollRowToVisible(row) }
+            if row >= 0 {
+                outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                outline.scrollRowToVisible(row)
+            }
             selecting = false
         }
         let type = tree.extensionIndex[Int(id)]
@@ -457,7 +475,12 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
             let free = volumeFreeBytes
             let gap = isVolumeRoot ? max(0, tree.volumeUsedBytes - tree.countedSize[0]) : 0
             let freeText = free < 0 ? "free unavailable" : "\(format(free)) free"
-            status.stringValue = "\(format(used)) used · \(freeText) · \(format(gap)) not counted · \(tree.unreadablePaths.count) folders unreadable"
+            if isVolumeRoot {
+                status.stringValue = "\(format(used)) used · \(freeText) · \(format(gap)) not counted · \(tree.unreadablePaths.count) folders unreadable"
+            } else {
+                let unreadable = tree.unreadablePaths.count
+                status.stringValue = "\(format(tree.countedSize[0])) in this folder · \(freeText) on disk" + (unreadable > 0 ? " · \(unreadable) folders unreadable" : "")
+            }
         }
     }
     private func updateBanner() {
@@ -489,13 +512,13 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
 
     @objc private func zoomIn() {
         guard let tree, let selectedNode, tree.flags[Int(selectedNode)].contains(.isDir) else { return }
-        zoomNode = selectedNode; window.title = tree.path(of: zoomNode); renderMap()
+        zoomNode = selectedNode; window.title = "MacDiskStats — \(tree.path(of: zoomNode))"; renderMap()
     }
     @objc private func zoomOut() {
         guard let tree, zoomNode != 0 else { return }
-        zoomNode = tree.parent[Int(zoomNode)]; window.title = tree.path(of: zoomNode); renderMap()
+        zoomNode = tree.parent[Int(zoomNode)]; window.title = "MacDiskStats — \(tree.path(of: zoomNode))"; renderMap()
     }
-    @objc private func zoomTop() { guard let tree else { return }; zoomNode = 0; window.title = tree.rootPath; renderMap() }
+    @objc private func zoomTop() { guard let tree else { return }; zoomNode = 0; window.title = "MacDiskStats — \(tree.rootPath)"; renderMap() }
     @objc private func rescan() { if let rootPath { startScan(rootPath) } }
     @objc private func rescanFolder() {
         guard let tree, let selectedNode, tree.flags[Int(selectedNode)].contains(.isDir), let rootPath else { return }
@@ -551,13 +574,77 @@ final class CushionApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOut
         }
         #endif
     }
+
+    #if DEBUG
+    private func measureUI() async {
+        guard let tree, let layout = mapView.layoutData else { NSApp.terminate(nil); return }
+        print("tree column widths " + outline.tableColumns.map { "\($0.identifier.rawValue)=\(Int($0.width))" }.joined(separator: " "))
+        print("type column widths " + types.tableColumns.map { "\($0.identifier.rawValue)=\(Int($0.width))" }.joined(separator: " "))
+        let files = tree.parent.indices.filter { !tree.flags[$0].contains(.isDir) }
+        let deepFile = files.max { left, right in
+            func depth(_ id: Int) -> Int { var n = Int32(id), d = 0; while n > 0 { d += 1; n = tree.parent[Int(n)] }; return d }
+            return depth(left) < depth(right)
+        }.map(Int32.init) ?? 0
+        let folder = tree.parent.indices.dropFirst().filter { tree.flags[$0].contains(.isDir) && tree.childCount[$0] > 0 }
+            .max { tree.countedSize[$0] < tree.countedSize[$1] }.map(Int32.init)
+        let type = tree.extensionIndex[Int(deepFile)] >= 0 ? tree.extensionIndex[Int(deepFile)] : nil
+        func measure(_ name: String, target: Double, _ work: () -> Void) {
+            var worst = 0.0
+            for _ in 0..<20 {
+                let start = DispatchTime.now().uptimeNanoseconds
+                work()
+                worst = max(worst, Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+            }
+            print(String(format: "%@ %.3f ms worst of 20 (target %.0f ms)", name, worst, target))
+        }
+        var selectWorst = 0.0
+        for _ in 0..<20 {
+            outline.collapseItem(nil, collapseChildren: true)
+            let start = DispatchTime.now().uptimeNanoseconds
+            selectNode(deepFile, fromMap: true)
+            selectWorst = max(selectWorst, Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+        }
+        print(String(format: "tree select, expand, scroll %.3f ms worst of 20 (target 16 ms)", selectWorst))
+        measure("map frame update", target: 16) { mapView.selectedNode = deepFile }
+        measure("hit test", target: 16) { _ = layout.hitTest(x: layout.width / 2, y: layout.height / 2) }
+        measure("hover status update", target: 16) { hoveredNode = deepFile; updateStatus() }
+        measure("type highlight shade", target: 16) {
+            var pixels: [UInt8] = []
+            Treemap.shade(layout, into: &pixels, params: Tokens.mapParams(dark: dark), highlightExtension: type)
+        }
+        let width = layout.width, height = layout.height, params = Tokens.mapParams(dark: dark)
+        measure("full layout plus shade", target: 100) {
+            let fresh = Treemap.layout(tree: tree, rootNode: zoomNode, widthPx: width, heightPx: height, params: params)
+            var pixels: [UInt8] = []
+            Treemap.shade(fresh, into: &pixels, params: params)
+        }
+        if let folder {
+            var worst = 0.0
+            for _ in 0..<20 {
+                selectedNode = folder
+                let startIn = DispatchTime.now().uptimeNanoseconds
+                zoomIn()
+                let inMS = Double(DispatchTime.now().uptimeNanoseconds - startIn) / 1_000_000
+                await mapTask?.value
+                let startOut = DispatchTime.now().uptimeNanoseconds
+                zoomOut()
+                let outMS = Double(DispatchTime.now().uptimeNanoseconds - startOut) / 1_000_000
+                await mapTask?.value
+                worst = max(worst, inMS + outMS)
+            }
+            print(String(format: "zoom in and back UI calls %.3f ms worst of 20 (target 16 ms; rendering measured separately)", worst))
+        } else { print("zoom in and back unavailable: no folder with children") }
+        fflush(stdout)
+        NSApp.terminate(nil)
+    }
+    #endif
 }
 
 @main
-struct CushionMain {
+struct MacDiskStatsMain {
     static func main() {
         let app = NSApplication.shared
-        let delegate = CushionApp()
+        let delegate = MacDiskStatsApp()
         app.delegate = delegate
         app.run()
     }

@@ -21,8 +21,8 @@ import DiskCore
     static let bannerTextFraction: CGFloat = 0.65
     static let bannerActionWidth: CGFloat = 126
     static let bannerCloseWidth: CGFloat = 42
-    static let treeColumns: [(String, CGFloat)] = [("Name", 330), ("Size", 100), ("Frees", 100), ("%", 65)]
-    static let typeColumns: [(String, CGFloat)] = [("Type", 190), ("Size", 100), ("%", 65)]
+    static let treeColumns: [(String, CGFloat)] = [("Name", 330), ("Size", 80), ("Frees", 80), ("%", 56)]
+    static let typeColumns: [(String, CGFloat)] = [("Type", 190), ("Size", 80), ("%", 56)]
     static let largestColumns: [(String, CGFloat)] = [("Path", 480), ("Size", 120)]
     static let startTopInset: CGFloat = 50
     static let paneMinRows: Int = 5
@@ -77,10 +77,11 @@ import DiskCore
         p.palette = dark ? darkColors : lightColors
         p.otherColor = dark ? MapColor(130, 135, 143) : MapColor(175, 177, 182)
         p.backgroundColor = dark ? MapColor(28, 28, 31) : MapColor(242, 242, 244)
-        p.ridgeHeight = 0.68
-        p.ridgeFactor = 0.83
-        p.ambient = dark ? 0.57 : 0.68
-        p.diffuse = 0.40
+        p.ridgeHeight = 0.72
+        p.ridgeFactor = 0.80
+        p.light = (-0.55, -0.62, 0.55)
+        p.ambient = dark ? 0.60 : 0.66
+        p.diffuse = 0.44
         return p
     }
 }
