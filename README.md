@@ -35,8 +35,6 @@ Finished scan, light and dark:
 
 Scan in progress, light and dark:
 
-![Scan in progress in light mode](docs/shots/scanning-light.png)
-![Scan in progress in dark mode](docs/shots/scanning-dark.png)
 
 ## License
 
