@@ -209,7 +209,7 @@ public enum Scanner {
                 for _ in 0..<options.workers {
                     group.enter()
                     Thread.detachNewThread {
-                        var buffer = [UInt8](repeating: 0, count: 131_072)
+                        var buffer = [UInt8](repeating: 0, count: options.bufferSize)
                         while let job = state.next() {
                             scanDirectory(job, state, &buffer)
                             state.finished()

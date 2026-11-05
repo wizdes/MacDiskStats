@@ -88,8 +88,10 @@ public struct FileTree: Sendable {
 public struct ScanOptions: Sendable {
     public var workers: Int
     public var includePrivateSize: Bool
-    public init(workers: Int = 16, includePrivateSize: Bool = true) {
+    public var bufferSize: Int
+    public init(workers: Int = 16, includePrivateSize: Bool = true, bufferSize: Int = 131_072) {
         self.workers = max(1, min(workers, 32)); self.includePrivateSize = includePrivateSize
+        self.bufferSize = max(65_536, min(bufferSize, 1_048_576))
     }
 }
 

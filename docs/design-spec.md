@@ -13,3 +13,16 @@ Commands: `scripts/check.sh` builds and runs 15 small checks and the source read
 # Map interface
 
 `Treemap.layout(tree:rootNode:widthPx:heightPx:params:)` returns a `TreemapLayout` with parallel node, rectangle, color and four surface-coefficient arrays. `rect(of:)` finds a box for a selection frame, and `hitTest(x:y:)` returns the deepest visible node through eight-pixel tiles and a pixel fallback at edges. Folders stay in the box arrays, while boxes under two pixels become solid leaves with their largest file's type. `Treemap.shade(_:into:params:highlightExtension:)` fills RGBA bytes on all cores; a highlight changes shading without layout. `TreemapParams` holds ridge, lighting and palette defaults. `build/macdiskstats-map <path> <out.png>` scans and saves a PNG.
+
+## Scan speed measurements (2026-11-04, warm cache, other builds running)
+
+| Method | Scope | Time | Notes |
+| --- | --- | --- | --- |
+| `getattrlistbulk`, all fields, 16 workers | `/` | 38.2 s | 3.62 million files, 343.8 GB; the current scanner |
+| Same, 32 workers, 1 MB buffer | `/` | 39.7 s | more kernel time, no gain |
+| Same, 8 workers | `/` | 47.7 s | |
+| `getattrlistbulk`, ordinary fields, 8 workers | `/` | 30.3 s | no private or clone fields |
+| `getattrlistbulk`, count only, 32 workers | Data volume | 20.8 s | kernel time 95 s, user time 4 s |
+| `searchfs` | `/` and Data | 2.7 s and 38.4 s | one thread; sums 414 GB on Data, so it sees clones as full size |
+
+The limit is kernel time, not our code. Skipping clone and private rules changes the total by 4.9%. `Tools/scan-lab` reruns these. Reading the raw APFS device needs root and is out of scope.
