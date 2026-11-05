@@ -35,6 +35,13 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var snapshotPath: String?
     private var snapshotAppearance: String?
     private var volumeFreeBytes: Int64 = 0
+    private let folderIcon = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+    private let fileIcon = NSImage(systemSymbolName: "doc", accessibilityDescription: nil)
+    private let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
     #if DEBUG
     private var measurePending = false
     #endif
@@ -168,7 +175,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         map.onContextMenu = { [weak self] _ in self?.contextMenu() }
         map.onResize = { [weak self] in self?.scheduleMapRender() }
         let treeScroll = NSScrollView(frame: .zero); treeScroll.hasVerticalScroller = true; treeScroll.autohidesScrollers = true
-        outline = ActionOutlineView(frame: .zero); outline.rowHeight = Tokens.rowHeight; outline.headerView = NSTableHeaderView()
+        outline = ActionOutlineView(frame: .zero); outline.rowHeight = Tokens.rowHeight; outline.usesAutomaticRowHeights = false; outline.headerView = NSTableHeaderView()
         (outline as? ActionOutlineView)?.onMenu = { [weak self] node in
             self?.selectNode(node)
             return self?.contextMenu()
@@ -316,7 +323,10 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             while parent > 0 { ancestors.append(parent); parent = tree.parent[Int(parent)] }
             selecting = true
             outline.beginUpdates()
-            for item in ancestors.reversed() where !outline.isItemExpanded(NSNumber(value: item)) { outline.expandItem(NSNumber(value: item)) }
+            for item in ancestors.reversed() {
+                let number = NSNumber(value: item)
+                if !outline.isItemExpanded(number) { outline.expandItem(number, expandChildren: false) }
+            }
             outline.endUpdates()
             let row = outline.row(forItem: NSNumber(value: id))
             if row >= 0 {
@@ -370,7 +380,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             let name = String(decoding: tree.names[a..<b], as: UTF8.self)
             cell.textField?.stringValue = tree.flags[n].contains(.unreadable) ? "\(name)  unreadable" : name
             cell.textField?.font = tree.flags[n].contains(.unreadable) ? Tokens.unreadableFont : Tokens.bodyFont
-            cell.imageView?.image = NSImage(systemSymbolName: tree.flags[n].contains(.isDir) ? "folder" : "doc", accessibilityDescription: nil)
+            cell.imageView?.image = tree.flags[n].contains(.isDir) ? folderIcon : fileIcon
         case "Size": cell.textField?.stringValue = tree.flags[n].contains(.unreadable) ? "unreadable" : format(tree.countedSize[n])
         case "Frees": cell.textField?.stringValue = tree.flags[n].contains(.unreadable) ? "unreadable" : format(tree.privateSize[n])
         default:
@@ -425,28 +435,23 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private func cellView(in table: NSTableView, key: String, right: Bool) -> NSTableCellView {
         let id = NSUserInterfaceItemIdentifier("Cell-\(key)")
         if let old = table.makeView(withIdentifier: id, owner: self) as? NSTableCellView { return old }
-        let cell = NSTableCellView(frame: .zero); cell.identifier = id
+        let columnWidth = table.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(key))?.width ?? 200
+        let cell = NSTableCellView(frame: NSRect(x: 0, y: 0, width: columnWidth, height: Tokens.rowHeight)); cell.identifier = id
         let label = NSTextField(labelWithString: "")
         label.font = right ? Tokens.numberFont : Tokens.bodyFont
         label.textColor = Tokens.text(dark)
         label.alignment = right ? .right : .left
         label.lineBreakMode = .byTruncatingMiddle
-        label.translatesAutoresizingMaskIntoConstraints = false
+        let hasImage = key == "Name" || key == "Type"
+        let leading = key == "%" ? CGFloat(2) : Tokens.cellInset + (hasImage ? Tokens.swatchSize + Tokens.cellInset : 0)
+        let trailing = key == "%" ? CGFloat(2) : Tokens.cellInset
+        label.frame = NSRect(x: leading, y: 2, width: max(0, columnWidth - leading - trailing), height: Tokens.rowHeight - 4)
+        label.autoresizingMask = .width
         cell.addSubview(label); cell.textField = label
-        if key == "Name" || key == "Type" {
-            let image = NSImageView(frame: .zero); image.translatesAutoresizingMaskIntoConstraints = false
+        if hasImage {
+            let image = NSImageView(frame: NSRect(x: Tokens.cellInset, y: (Tokens.rowHeight - Tokens.swatchSize) / 2, width: Tokens.swatchSize, height: Tokens.swatchSize))
             cell.addSubview(image); cell.imageView = image
-            NSLayoutConstraint.activate([
-                image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: Tokens.cellInset),
-                image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                image.widthAnchor.constraint(equalToConstant: Tokens.swatchSize), image.heightAnchor.constraint(equalToConstant: Tokens.swatchSize),
-                label.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: Tokens.cellInset)
-            ])
-        } else { label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: Tokens.cellInset).isActive = true }
-        NSLayoutConstraint.activate([
-            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -Tokens.cellInset),
-            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
-        ])
+        }
         return cell
     }
     private func swatch(_ index: Int) -> NSImage {
@@ -462,7 +467,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
     private func format(_ bytes: Int64) -> String {
         if bytes <= 0 { return "0 B" }
-        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        return byteFormatter.string(fromByteCount: bytes)
     }
     private func updateStatus() {
         guard let tree, status != nil else { return }

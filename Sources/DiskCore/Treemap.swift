@@ -11,11 +11,11 @@ public struct MapColor: Sendable {
 }
 
 public struct TreemapParams: Sendable {
-    public var ridgeHeight: Float = 0.75
+    public var ridgeHeight: Float = 0.36
     public var ridgeFactor: Float = 0.75
     public var ambient: Float = 0.55
     public var diffuse: Float = 0.45
-    public var light: (Float, Float, Float) = (-0.35, -0.45, 0.82)
+    public var light: (Float, Float, Float) = (-0.09759, -0.19518, 0.97590)
     public var palette: [MapColor] = [MapColor(67, 147, 220), MapColor(99, 185, 130), MapColor(230, 169, 73), MapColor(169, 122, 211), MapColor(220, 111, 117), MapColor(85, 187, 185)]
     public var otherColor = MapColor(120, 137, 155)
     public var backgroundColor = MapColor(24, 29, 35)
@@ -112,50 +112,60 @@ public enum Treemap {
             if r.h > 0 { let k = 4 * height / Float(r.h); z.y2 -= k; z.y += k * Float(2 * r.y + r.h) }
             return z
         }
-        func worst(_ sizes: [Int64], _ start: Int, _ end: Int, _ short: Double, _ scale: Double) -> Double {
-            var sum = 0.0, lo = Double.greatestFiniteMagnitude, hi = 0.0
-            for j in start..<end { let v = Double(sizes[j]) * scale; sum += v; lo = min(lo, v); hi = max(hi, v) }
+        func worst(_ sum: Double, _ lo: Double, _ hi: Double, _ short: Double) -> Double {
             guard lo > 0, short > 0 else { return .infinity }
             let sq = sum * sum
             return max(short * short * hi / sq, sq / (short * short * lo))
         }
         func visit(_ node: Int32, _ r: Region, _ surface: Surface, _ level: Int) {
             let dir = tree.flags[Int(node)].contains(.isDir)
-            let terminal = !dir || r.w < 2 || r.h < 2 || tree.childCount[Int(node)] == 0
+            let terminal = !dir || r.w <= 2 || r.h <= 2 || tree.childCount[Int(node)] == 0
             add(node, r, surface, terminal)
             if terminal { return }
             let begin = Int(tree.firstChild[Int(node)]), count = Int(tree.childCount[Int(node)])
-            var children: [Int32] = [], sizes: [Int64] = []
+            var positiveCount = 0
+            var total: Int64 = 0
             for j in begin..<(begin + count) {
-                let child = tree.children[j], size = tree.countedSize[Int(child)]
-                if size > 0 { children.append(child); sizes.append(size) }
+                let size = tree.countedSize[Int(tree.children[j])]
+                if size > 0 { positiveCount += 1; total += size }
             }
-            guard !children.isEmpty else { return }
-            let total = sizes.reduce(Int64(0), +)
-            var remaining = r, used = 0, start = 0
+            guard positiveCount > 0 else { return }
+            var remaining = r, used: Int64 = 0, start = 0
             let nextHeight = params.ridgeHeight * pow(params.ridgeFactor, Float(level))
-            while start < children.count && remaining.w > 0 && remaining.h > 0 {
+            while start < positiveCount && remaining.w > 0 && remaining.h > 0 {
                 let horizontal = remaining.w < remaining.h
                 let short = Double(min(remaining.w, remaining.h))
                 let scale = Double(remaining.w) * Double(remaining.h) / Double(max(1, total - Int64(used)))
                 var end = start + 1
-                while end < children.count && worst(sizes, start, end + 1, short, scale) <= worst(sizes, start, end, short, scale) { end += 1 }
-                let rowSum = sizes[start..<end].reduce(Int64(0), +)
-                let lastRow = end == children.count
+                let firstSize = tree.countedSize[Int(tree.children[begin + start])]
+                var rowSum = firstSize
+                var scaledSum = Double(firstSize) * scale
+                var smallest = scaledSum
+                let largest = scaledSum
+                var aspect = worst(scaledSum, smallest, largest, short)
+                while end < positiveCount {
+                    let nextSize = tree.countedSize[Int(tree.children[begin + end])]
+                    let nextScaled = Double(nextSize) * scale
+                    let nextAspect = worst(scaledSum + nextScaled, min(smallest, nextScaled), largest, short)
+                    if nextAspect > aspect { break }
+                    rowSum += nextSize; scaledSum += nextScaled; smallest = min(smallest, nextScaled); aspect = nextAspect; end += 1
+                }
+                let lastRow = end == positiveCount
                 let thickness = lastRow ? (horizontal ? remaining.h : remaining.w) : max(0, min(horizontal ? remaining.h : remaining.w, Int((Double(rowSum) * scale / Double(horizontal ? remaining.w : remaining.h)).rounded())))
                 let span = horizontal ? remaining.w : remaining.h
                 var cursor = 0, rowUsed: Int64 = 0
                 for j in start..<end {
-                    rowUsed += sizes[j]
+                    let child = tree.children[begin + j]
+                    rowUsed += tree.countedSize[Int(child)]
                     let edge = j == end - 1 ? span : Int((Double(rowUsed) / Double(rowSum) * Double(span)).rounded())
                     let length = max(0, edge - cursor)
                     let box = horizontal ? Region(x: remaining.x + cursor, y: remaining.y, w: length, h: thickness) : Region(x: remaining.x, y: remaining.y + cursor, w: thickness, h: length)
-                    if box.w > 0 && box.h > 0 { visit(children[j], box, ridge(surface, box, nextHeight), level + 1) }
+                    if box.w > 0 && box.h > 0 { visit(child, box, ridge(surface, box, nextHeight), level + 1) }
                     cursor = edge
                 }
                 if horizontal { remaining.y += thickness; remaining.h -= thickness }
                 else { remaining.x += thickness; remaining.w -= thickness }
-                used += Int(rowSum); start = end
+                used += rowSum; start = end
             }
         }
         visit(rootNode, Region(x: 0, y: 0, w: w, h: h), Surface(), 0)
@@ -185,8 +195,8 @@ public enum Treemap {
                         if i < 0 { writer.pointer[out] = params.backgroundColor.r; writer.pointer[out+1] = params.backgroundColor.g; writer.pointer[out+2] = params.backgroundColor.b; writer.pointer[out+3] = 255; continue }
                         let type = layout.colorIndex[i]
                         let color = type >= 0 && Int(type) < params.palette.count ? params.palette[Int(type)] : params.otherColor
-                        let nx = -(2 * layout.surfaceX2[i] * Float(px) + layout.surfaceX[i])
-                        let ny = -(2 * layout.surfaceY2[i] * Float(py) + layout.surfaceY[i])
+                        let nx = -(2 * layout.surfaceX2[i] * (Float(px) + 0.5) + layout.surfaceX[i])
+                        let ny = -(2 * layout.surfaceY2[i] * (Float(py) + 0.5) + layout.surfaceY[i])
                         let light = max(0, (nx * params.light.0 + ny * params.light.1 + params.light.2) / sqrt(nx * nx + ny * ny + 1))
                         let dim: Float = highlightExtension == nil || highlightExtension == type ? 1 : 0.22
                         let edge = layout.folderEdge[at] == 0 ? Float(1) : params.folderEdgeFactor

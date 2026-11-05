@@ -117,6 +117,28 @@ do {
 } catch { failures += 1; print("FAIL map setup: \(error)") }
 
 do {
+    let dir = base.appendingPathComponent("cushion")
+    let nested = dir.appendingPathComponent("one/two")
+    try fm.createDirectory(at: nested, withIntermediateDirectories: true)
+    try file(nested.appendingPathComponent("large.dat"), bytes: 100_000)
+    let tree = try await scan("cushion")
+    let map = Treemap.layout(tree: tree, rootNode: 0, widthPx: 256, heightPx: 256)
+    var params = TreemapParams()
+    params.palette = Array(repeating: MapColor(255, 255, 255), count: params.palette.count)
+    params.otherColor = MapColor(255, 255, 255)
+    var pixels: [UInt8] = []
+    Treemap.shade(map, into: &pixels, params: params)
+    let values = (8..<248).flatMap { y in (8..<248).map { x in Int(pixels[(y * 256 + x) * 4]) } }
+    let floor = Int((params.ambient * 255).rounded()) + 1
+    let floorFraction = Double(values.filter { $0 <= floor }.count) / Double(values.count)
+    let center = Int(pixels[(128 * 256 + 128) * 4])
+    let smooth = (8..<248).allSatisfy { y in (8..<247).allSatisfy { x in
+        abs(Int(pixels[(y * 256 + x) * 4]) - Int(pixels[(y * 256 + x + 1) * 4])) <= 4
+    } }
+    check("bug: cushion ambient-floor wedge at depth three", floorFraction < 0.02 && center >= 217 && values.max()! - values.min()! >= 20 && smooth)
+} catch { failures += 1; print("FAIL cushion setup: \(error)") }
+
+do {
     let dir = base.appendingPathComponent("map-type"), many = dir.appendingPathComponent("many")
     try fm.createDirectory(at: many, withIntermediateDirectories: true)
     for i in 0..<6 { try file(many.appendingPathComponent("\(i).png"), bytes: 10_000) }

@@ -77,11 +77,7 @@ import DiskCore
         p.palette = dark ? darkColors : lightColors
         p.otherColor = dark ? MapColor(130, 135, 143) : MapColor(175, 177, 182)
         p.backgroundColor = dark ? MapColor(28, 28, 31) : MapColor(242, 242, 244)
-        p.ridgeHeight = 0.72
-        p.ridgeFactor = 0.80
-        p.light = (-0.55, -0.62, 0.55)
-        p.ambient = dark ? 0.60 : 0.66
-        p.diffuse = 0.44
+        p.ambient = 0.55
         return p
     }
 }
