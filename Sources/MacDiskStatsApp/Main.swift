@@ -45,6 +45,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }()
     #if DEBUG
     private var measurePending = false
+    private var e2eScript: String?
     #endif
     private var dark: Bool { window?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
 
@@ -68,9 +69,20 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         window.contentView = content
         if let snapshotAppearance { window.appearance = NSAppearance(named: snapshotAppearance == "dark" ? .darkAqua : .aqua) }
         showStart()
+        #if DEBUG
+        if let e2eScript {
+            Task { await runE2E(e2eScript) }
+        }
+        #endif
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        if let rootPath { startScan(rootPath) }
+        if let rootPath {
+            #if DEBUG
+            if e2eScript == nil { startScan(rootPath) }
+            #else
+            startScan(rootPath)
+            #endif
+        }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func windowDidResize(_ notification: Notification) { scheduleMapRender() }
@@ -82,6 +94,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         for i in args.indices {
             #if DEBUG
             if args[i] == "--measure" { measurePending = true; continue }
+            if args[i] == "--e2e", i + 1 < args.count { e2eScript = args[i + 1]; continue }
             #endif
             guard i + 1 < args.count else { continue }
             switch args[i] {
@@ -620,6 +633,111 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     #if DEBUG
+    private func runE2E(_ script: String) async {
+        var failed = 0, passed = 0
+        func check(_ name: String, _ good: Bool) {
+            print("\(good ? "PASS" : "FAIL") e2e: \(name)")
+            if good { passed += 1 } else { failed += 1 }
+            fflush(stdout)
+        }
+        let volumeButtons = startView?.subviews.compactMap { $0 as? NSButton }.filter { $0.identifier?.rawValue == "/" || $0.identifier?.rawValue.hasPrefix("/Volumes/") == true } ?? []
+        check("start screen lists disks", startView != nil && !volumeButtons.isEmpty)
+        guard script == "fixture", let rootPath else {
+            check("fixture script and path supplied", false); print("e2e \(passed) passed, \(failed) failed"); NSApp.terminate(nil); return
+        }
+        startScan(rootPath)
+        for _ in 0..<200 where isScanning || tree == nil || mapView.layoutData == nil {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard let tree else {
+            check("fixture scan completed", false); print("e2e \(passed) passed, \(failed) failed"); NSApp.terminate(nil); return
+        }
+        await mapTask?.value
+        check("tree types and map filled", tree.filesSeen >= 2 && outline.numberOfRows > 0 && types.numberOfRows > 0 && mapView.layoutData?.boxCount ?? 0 > 0)
+        guard let layout = mapView.layoutData, let file = tree.children.first(where: { !tree.flags[Int($0)].contains(.isDir) && tree.countedSize[Int($0)] > 0 }), let box = layout.rect(of: file) else {
+            check("fixture has a visible file box", false); print("e2e \(passed) passed, \(failed) failed"); NSApp.terminate(nil); return
+        }
+        if let hit = layout.hitTest(x: box.x + box.width / 2, y: box.y + box.height / 2) { selectNode(hit, fromMap: true) }
+        check("map hit selects tree row and type", selectedNode == file && outline.selectedRow >= 0 && types.selectedRow == Int(tree.extensionIndex[Int(file)]))
+        selectNode(file, fromMap: true)
+        check("row selection frames map box", mapView.selectedNode == file && layout.rect(of: file) != nil)
+        let beforeArrow = outline.selectedRow
+        let nextArrow = min(beforeArrow + 1, outline.numberOfRows - 1)
+        outline.selectRowIndexes(IndexSet(integer: nextArrow), byExtendingSelection: false)
+        check("arrow navigation selection callback moves row", outline.selectedRow == nextArrow && nextArrow != beforeArrow)
+        selectNode(file, fromMap: true)
+        check("selection status has path", status.stringValue.contains(tree.path(of: file)))
+        hoveredNode = file; updateStatus()
+        check("hover status has path", status.stringValue.contains(tree.path(of: file)))
+        hoveredNode = nil; updateStatus()
+        var plain: [UInt8] = [], restored: [UInt8] = [], highlighted: [UInt8] = []
+        let params = Tokens.mapParams(dark: dark)
+        Treemap.shade(layout, into: &plain, params: params)
+        types.selectRowIndexes(IndexSet(integer: Int(tree.extensionIndex[Int(file)])), byExtendingSelection: false)
+        await mapTask?.value
+        Treemap.shade(layout, into: &highlighted, params: params, highlightExtension: highlightedType)
+        types.deselectAll(nil); highlightedType = nil; renderMap(shadeOnly: true)
+        await mapTask?.value
+        Treemap.shade(layout, into: &restored, params: params)
+        check("type highlight clears to identical pixels", highlighted != plain && restored == plain)
+        showLargest()
+        check("Top 100 opens", topWindow != nil && !topIDs.isEmpty)
+        if let topTable, !topIDs.isEmpty {
+            topTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            check("Top 100 row selects main window", selectedNode == topIDs[0])
+        }
+        selectNode(file, fromMap: true)
+        copyPath()
+        check("Copy Path writes exact path", NSPasteboard.general.string(forType: .string) == tree.path(of: file))
+        let item = previewPanel(QLPreviewPanel.shared(), previewItemAt: 0) as? NSURL
+        check("Quick Look source resolves exact URL", item?.path == URL(fileURLWithPath: tree.path(of: file)).path)
+        let allowed = ["Delete", "Trash", "Move", "Rename"]
+        func titles(_ menu: NSMenu) -> [String] { menu.items.flatMap { [$0.title] + ($0.submenu.map(titles) ?? []) } }
+        check("menus contain no write actions", !titles(NSApp.mainMenu!).contains { title in allowed.contains { title.localizedCaseInsensitiveContains($0) } })
+        check("context menu contains no write actions", !titles(contextMenu()).contains { title in allowed.contains { title.localizedCaseInsensitiveContains($0) } })
+        if let folder = tree.children.first(where: { tree.flags[Int($0)].contains(.isDir) && tree.childCount[Int($0)] > 0 }) {
+            selectNode(folder, fromMap: true); zoomIn(); await mapTask?.value
+            check("zoom in enters folder", zoomNode == folder)
+            zoomOut(); await mapTask?.value
+            check("zoom out returns to parent", zoomNode == 0)
+            zoomIn(); zoomTop(); await mapTask?.value
+            check("zoom top returns to root", zoomNode == 0)
+        } else { check("fixture folder for zoom", false) }
+        let oldSize = mapView.layoutData?.width
+        window.setContentSize(NSSize(width: window.contentLayoutRect.width + 100, height: window.contentLayoutRect.height + 30))
+        scheduleMapRender()
+        try? await Task.sleep(for: .milliseconds(250)); await mapTask?.value
+        check("resize redraws map", mapView.layoutData?.width != oldSize)
+        for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            window.appearance = NSAppearance(named: appearance); refreshAppearance(); renderMap(); await mapTask?.value
+            check("\(name) map renders", mapView.layoutData?.boxCount ?? 0 > 0)
+        }
+        let deleted = URL(fileURLWithPath: rootPath).appendingPathComponent("delete-me.txt")
+        check("rescan fixture initially includes file", tree.children.contains { tree.path(of: $0) == deleted.path })
+        print("E2E DELETE NOW"); fflush(stdout)
+        for _ in 0..<200 where FileManager.default.fileExists(atPath: deleted.path) {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        check("test script removed fixture file", !FileManager.default.fileExists(atPath: deleted.path))
+        rescan()
+        for _ in 0..<200 where isScanning || self.tree == nil {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        check("Rescan removes deleted file", self.tree?.children.contains { self.tree?.path(of: $0) == deleted.path } == false)
+        if let current = self.tree, let folder = current.children.first(where: { current.flags[Int($0)].contains(.isDir) }) {
+            outline.expandItem(NSNumber(value: folder))
+            selectNode(folder, fromMap: true); zoomIn(); await mapTask?.value
+            publishTree(current, final: true); await mapTask?.value
+            check("phase update keeps selection and zoom", selectedNode == folder && zoomNode == folder)
+            check("phase update keeps expansion", outline.isItemExpanded(NSNumber(value: folder)))
+        } else { check("phase update fixture folder exists", false) }
+        startScan(rootPath); cancelScan()
+        check("Cancel action stops scan", !isScanning && status.stringValue.contains("cancelled"))
+        print("e2e \(passed) passed, \(failed) failed")
+        fflush(stdout)
+        NSApp.terminate(nil)
+    }
+
     private func measureUI() async {
         guard let tree, let layout = mapView.layoutData else { NSApp.terminate(nil); return }
         print("tree column widths " + outline.tableColumns.map { "\($0.identifier.rawValue)=\(Int($0.width))" }.joined(separator: " "))

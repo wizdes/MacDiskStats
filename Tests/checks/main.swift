@@ -170,5 +170,8 @@ do {
     check("bug: APFS container use exceeds root and Data volumes", abs(Scanner.volumeUsedBytes(root: "/") - expected) < 16_000_000)
 } catch { failures += 1; print("FAIL df setup: \(error)") }
 
+let extended = await runExtendedChecks(base: base)
+checks += extended.tests
+failures += extended.failures
 print("checks \(checks), failed \(failures)")
 exit(failures == 0 ? 0 : 1)
