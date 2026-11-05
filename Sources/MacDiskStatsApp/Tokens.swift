@@ -5,6 +5,21 @@ import DiskCore
     static let rowHeight: CGFloat = 22
     static let headerHeight: CGFloat = 26
     static let statusHeight: CGFloat = 27
+    static let statusBarInset: CGFloat = 10
+    static let statusBarWidth: CGFloat = 124
+    static let statusBarHeight: CGFloat = 7
+    static let liveBoxRadius: CGFloat = 3
+    static let liveBoxGap: CGFloat = 0
+    static let liveCushionHighlight: CGFloat = 0.22
+    static let liveCushionShade: CGFloat = 0.12
+    static let liveSizingOpacity: Float = 0.94
+    static let liveShimmerLow: Float = 0.89
+    static let liveShimmerDuration: CFTimeInterval = 1.8
+    static let livePreviewLimit = 48
+    static let liveTypeLimit = 24
+    static let liveMinimumBoxSide: CGFloat = 3
+    static let liveGradientStart = CGPoint(x: 0.38, y: 0.37)
+    static let liveGradientEnd = CGPoint(x: 0.95, y: 1)
     static let bannerHeight: CGFloat = 27
     static let topFraction: CGFloat = 0.38
     static let treeFraction: CGFloat = 0.58
@@ -48,7 +63,7 @@ import DiskCore
     static func background(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.12, alpha: 1) : .white }
     static func secondary(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.16, alpha: 1) : NSColor(calibratedWhite: 0.97, alpha: 1) }
     static func mapBackground(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.11, alpha: 1) : NSColor(calibratedWhite: 0.95, alpha: 1) }
-    static func liveFolder(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.31, alpha: 1) : NSColor(calibratedWhite: 0.77, alpha: 1) }
+    static func liveFolder(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.32, alpha: 1) : NSColor(calibratedWhite: 0.88, alpha: 1) }
     static func text(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.91, alpha: 1) : NSColor(calibratedWhite: 0.12, alpha: 1) }
     static func muted(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.70, alpha: 1) : NSColor(calibratedWhite: 0.39, alpha: 1) }
     static func separator(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.28, alpha: 1) : NSColor(calibratedWhite: 0.88, alpha: 1) }

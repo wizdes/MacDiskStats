@@ -9,7 +9,7 @@ for appearance in light dark; do
   echo "snapshot $appearance: $snapshot_dir/applications-$appearance.png"
 done
 for appearance in light dark; do
-  MACDISKSTATS_SNAPSHOT_DIR="$snapshot_dir" build/MacDiskStats.app/Contents/MacOS/MacDiskStats --scan /Applications --appearance "$appearance" --snapshot-at-seconds 0.25 --snapshot "$snapshot_dir/live-$appearance.png"
+  MACDISKSTATS_SNAPSHOT_DIR="$snapshot_dir" build/MacDiskStats.app/Contents/MacOS/MacDiskStats --scan /Applications --appearance "$appearance" --snapshot-at-seconds 1 --snapshot "$snapshot_dir/live-$appearance.png"
   test -s "$snapshot_dir/live-$appearance.png"
   echo "live snapshot $appearance: $snapshot_dir/live-$appearance.png"
 done

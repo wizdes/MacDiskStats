@@ -41,6 +41,11 @@ private final class LiveScanBox: @unchecked Sendable {
             seen.set(model)
         })
         let model = seen.get()
+        let liveFrame = model?.snapshot(childrenOf: [0])
+        verify("live frame totals disagree across tree types and status", liveFrame.map { frame in
+            frame.countedBytes == frame.extensions.reduce(0) { $0 + $1.bytes } &&
+            frame.children[0]?.first(where: { $0.name == "target" })?.bytes == frame.countedBytes
+        } == true)
         let rootRows = model?.children(of: 0) ?? []
         let targetRow = rootRows.first { $0.name == "target" }
         verify("live root rows missing before final tree", targetRow != nil)
