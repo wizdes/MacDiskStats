@@ -17,8 +17,8 @@ swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG
 libtool -static -o "$out/libDiskCore.a" "$out/DiskCore.o"
 swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Sources/macdiskstats-bench/*.swift "$out/libDiskCore.a" -o "$out/macdiskstats-bench"
 swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Tools/macdiskstats-map/*.swift "$out/libDiskCore.a" -o "$out/macdiskstats-map"
+swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Tools/scan-lab/*.swift "$out/libDiskCore.a" -o "$out/scan-lab"
 swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Tests/checks/*.swift "$out/libDiskCore.a" -o "$out/checks"
-<<<<<<< ours
 app="$out/MacDiskStats.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cat > "$app/Contents/Info.plist" <<'PLIST'
@@ -40,7 +40,4 @@ if [[ "$mode" == release ]]; then
 else
   codesign --force --sign - "$app"
 fi
-=======
-swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Tools/scan-lab/*.swift "$out/libDiskCore.a" -o "$out/scan-lab"
->>>>>>> theirs
 echo "build $mode: $((SECONDS-start)) seconds"
