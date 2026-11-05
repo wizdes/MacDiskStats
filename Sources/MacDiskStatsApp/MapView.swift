@@ -10,6 +10,7 @@ import DiskCore
     var layoutData: TreemapLayout? { didSet { updateFrame() } }
     var selectedNode: Int32? { didSet { updateFrame() } }
     private let imageLayer = CALayer()
+    private let previewLayer = CALayer()
     private let frameLayer = CAShapeLayer()
     private var area: NSTrackingArea?
     var dark = false { didSet { layer?.backgroundColor = Tokens.mapBackground(dark).cgColor; updateFrame() } }
@@ -18,6 +19,7 @@ import DiskCore
         super.init(frame: frame)
         wantsLayer = true
         layer?.addSublayer(imageLayer)
+        layer?.addSublayer(previewLayer)
         layer?.addSublayer(frameLayer)
         layer?.backgroundColor = Tokens.mapBackground(false).cgColor
         imageLayer.contentsGravity = .resize
@@ -27,6 +29,7 @@ import DiskCore
     override func layout() {
         super.layout()
         imageLayer.frame = bounds
+        previewLayer.frame = bounds
         frameLayer.frame = bounds
         updateFrame()
         onResize?()
@@ -46,7 +49,29 @@ import DiskCore
                                   bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
                                   provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return }
         imageLayer.contents = image
+        previewLayer.sublayers = nil
         imageLayer.contentsScale = window?.backingScaleFactor ?? 1
+    }
+    func showPreview(_ totals: [(path: String, bytes: Int64)], root: String) {
+        let folders = totals.filter { item in
+            let relative = root == "/" ? String(item.path.dropFirst()) : String(item.path.dropFirst(root.count + 1))
+            return item.bytes > 0 && !relative.contains("/")
+        }.sorted { $0.bytes > $1.bytes }.prefix(24)
+        let sum = folders.reduce(Int64(0)) { $0 + $1.bytes }
+        guard sum > 0, bounds.width > 0, bounds.height > 0 else { return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        var x: CGFloat = 0
+        previewLayer.sublayers = folders.enumerated().map { index, item in
+            let block = CALayer()
+            let width = index == folders.count - 1 ? bounds.width - x : bounds.width * CGFloat(item.bytes) / CGFloat(sum)
+            block.frame = CGRect(x: x, y: 0, width: max(0, width), height: bounds.height)
+            block.backgroundColor = NSColor(calibratedHue: CGFloat((index * 37) % 100) / 100, saturation: dark ? 0.33 : 0.26, brightness: dark ? 0.39 : 0.79, alpha: 1).cgColor
+            block.borderColor = Tokens.mapBackground(dark).cgColor
+            block.borderWidth = 1
+            x += width
+            return block
+        }
+        CATransaction.commit()
     }
     private func hit(_ point: NSPoint) -> Int32? {
         guard let layoutData, bounds.width > 0, bounds.height > 0 else { return nil }

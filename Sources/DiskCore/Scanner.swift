@@ -120,8 +120,9 @@ private final class State: @unchecked Sendable {
         var size = isDir ? 0 : max(0, e.allocated)
         var privateSize = isDir || !options.includePrivateSize ? 0 : max(0, e.privateBytes)
         if !isDir && !isLink && e.links > 1 {
+            f.insert(.hardlink)
             privateSize = 0
-            if !links.insert(key) { size = 0; f.insert(.hardlinkDup) }
+            if !links.insert(key) { size = 0; f = .hardlinkDup }
         } else if !isDir && !isLink && e.cloneRefs > 1 && e.cloneID != 0 {
             let clone = Key(device: e.device, inode: e.cloneID)
             if !clones.insert(clone) { size = privateSize; f.insert(.cloneShared) }
@@ -188,7 +189,17 @@ private final class State: @unchecked Sendable {
 
 public enum Scanner {
     public enum ScanError: Error { case cannotOpen(String, Int32), cancelled }
-    public static func scan(root path: String, options: ScanOptions = ScanOptions(), progress: (@Sendable (ScanProgress) -> Void)? = nil) async throws -> FileTree {
+    public static func scan(root path: String, options: ScanOptions = ScanOptions(), progress: (@Sendable (ScanProgress) -> Void)? = nil, phase1: (@MainActor @Sendable (FileTree) -> Void)? = nil) async throws -> FileTree {
+        guard options.includePrivateSize && options.twoPhase else { return try await scanSingle(root: path, options: options, progress: progress) }
+        var quick = options
+        quick.includePrivateSize = false
+        let first = try await scanSingle(root: path, options: quick, progress: progress)
+        await phase1?(first)
+        try Task.checkCancellation()
+        if first.limitations.contains(where: { $0.contains("getattrlistbulk unsupported") }) { return first }
+        return try await enrich(first, options: options)
+    }
+    private static func scanSingle(root path: String, options: ScanOptions, progress: (@Sendable (ScanProgress) -> Void)?) async throws -> FileTree {
         let normalized = path == "/" ? "/" : String(path.drop(while: { $0 == "/" })).isEmpty ? path : (path.hasSuffix("/") ? String(path.dropLast()) : path)
         let fd = open(normalized, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw ScanError.cannotOpen(normalized, errno) }
@@ -257,7 +268,7 @@ private func scanDirectory(_ job: Job, _ s: State, _ buffer: inout [UInt8]) {
     attrs.dirattr = UInt32(ATTR_DIR_MOUNTSTATUS)
     attrs.fileattr = UInt32(ATTR_FILE_LINKCOUNT | ATTR_FILE_TOTALSIZE | ATTR_FILE_ALLOCSIZE)
     if s.options.includePrivateSize { attrs.forkattr = UInt32(ATTR_CMNEXT_PRIVATESIZE | ATTR_CMNEXT_CLONEID | ATTR_CMNEXT_CLONE_REFCNT) }
-    let opts = UInt64(FSOPT_PACK_INVAL_ATTRS | FSOPT_ATTR_CMN_EXTENDED)
+    let opts = s.options.includePrivateSize ? UInt64(FSOPT_PACK_INVAL_ATTRS | FSOPT_ATTR_CMN_EXTENDED) : UInt64(FSOPT_PACK_INVAL_ATTRS)
     let result = buffer.withUnsafeMutableBytes { raw -> Int32 in
         getattrlistbulk(fd, &attrs, raw.baseAddress, raw.count, opts)
     }
@@ -384,4 +395,167 @@ private func finish(_ s: State) -> FileTree {
     let largest = tree.topFiles(limit: 100)
     tree = FileTree(rootPath: s.rootPath, parent: s.parent, firstChild: first, childCount: counts, countedSize: s.counted, privateSize: s.priv, logicalSize: s.logical, fileCount: s.files, modTime: s.mod, extensionIndex: extIndex, largestFileType: largestFileType, flags: s.flags, nameOffset: s.offsets, nameLength: s.lengths, names: s.names, children: children, extensions: extensions, unreadablePaths: paths, limitations: s.limitations.sorted(), volumeUsedBytes: s.volumeUsed, filesSeen: s.filesSeen, dirsSeen: s.dirsSeen, largestFiles: largest)
     return tree
+}
+
+private final class Enrichment: @unchecked Sendable {
+    let tree: FileTree
+    let fd: Int32
+    let options: ScanOptions
+    let directories: [Int32]
+    let clones = Shards()
+    let lock = NSLock()
+    var nextDirectory = 0
+    var cancelled = false
+    var failed = false
+    var counted: [Int64]
+    var priv: [Int64]
+    var flags: [NodeFlags]
+    init(tree: FileTree, fd: Int32, options: ScanOptions) {
+        self.tree = tree; self.fd = fd; self.options = options
+        directories = tree.parent.indices.compactMap { i in
+            let f = tree.flags[i]
+            return f.contains(.isDir) && !f.contains(.unreadable) && !f.contains(.mountPointStopped) ? Int32(i) : nil
+        }
+        counted = tree.countedSize; priv = tree.privateSize; flags = tree.flags
+    }
+    deinit { close(fd) }
+    func next() -> Int32? {
+        lock.lock(); defer { lock.unlock() }
+        guard !cancelled && nextDirectory < directories.count else { return nil }
+        let id = directories[nextDirectory]; nextDirectory += 1; return id
+    }
+    func update(_ id: Int32, device: UInt64, privateBytes: Int64, cloneID: UInt64, refs: UInt32) {
+        let i = Int(id)
+        guard !tree.flags[i].contains(.isDir) else { return }
+        let hardlink = tree.flags[i].contains(.hardlink) || tree.flags[i].contains(.hardlinkDup)
+        var size = tree.countedSize[i]
+        var privateSize = max(0, privateBytes)
+        var shared = false
+        if hardlink { privateSize = 0 }
+        else if !tree.flags[i].contains(.symlink) && refs > 1 && cloneID != 0 {
+            if !clones.insert(Key(device: device, inode: cloneID)) { size = privateSize; shared = true }
+        }
+        lock.lock()
+        counted[i] = size; priv[i] = privateSize
+        if shared { flags[i].insert(.cloneShared) }
+        lock.unlock()
+    }
+    func fail() { lock.lock(); failed = true; cancelled = true; lock.unlock() }
+    func isCancelled() -> Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+}
+
+private func enrich(_ tree: FileTree, options: ScanOptions) async throws -> FileTree {
+    let fd = open(tree.rootPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    guard fd >= 0 else { throw Scanner.ScanError.cannotOpen(tree.rootPath, errno) }
+    let state = Enrichment(tree: tree, fd: fd, options: options)
+    return try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { continuation in
+            let group = DispatchGroup()
+            for _ in 0..<options.workers {
+                group.enter()
+                Thread.detachNewThread {
+                    var buffer = [UInt8](repeating: 0, count: options.bufferSize)
+                    while let id = state.next() { enrichDirectory(id, state, &buffer) }
+                    group.leave()
+                }
+            }
+            DispatchQueue.global().async {
+                group.wait()
+                if state.failed { continuation.resume(throwing: Scanner.ScanError.cannotOpen(tree.rootPath, EIO)) }
+                else if state.cancelled { continuation.resume(throwing: Scanner.ScanError.cancelled) }
+                else { continuation.resume(returning: correctedTree(state)) }
+            }
+        }
+    } onCancel: { state.lock.lock(); state.cancelled = true; state.lock.unlock() }
+}
+
+private func enrichDirectory(_ id: Int32, _ s: Enrichment, _ buffer: inout [UInt8]) {
+    let fd = openat(s.fd, id == 0 ? "." : String(s.tree.path(of: id).dropFirst(s.tree.rootPath == "/" ? 1 : s.tree.rootPath.count + 1)), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    guard fd >= 0 else { s.fail(); return }
+    defer { close(fd) }
+    var directoryStat = stat()
+    guard fstat(fd, &directoryStat) == 0 else { s.fail(); return }
+    let start = Int(s.tree.firstChild[Int(id)]), end = start + Int(s.tree.childCount[Int(id)])
+    var byName: [String: Int32] = [:]
+    byName.reserveCapacity(end - start)
+    for at in start..<end {
+        let child = s.tree.children[at], i = Int(child)
+        let a = Int(s.tree.nameOffset[i]), b = a + Int(s.tree.nameLength[i])
+        byName[String(decoding: s.tree.names[a..<b], as: UTF8.self)] = child
+    }
+    var attrs = attrlist()
+    attrs.bitmapcount = UInt16(ATTR_BIT_MAP_COUNT)
+    attrs.commonattr = UInt32(ATTR_CMN_RETURNED_ATTRS) | UInt32(ATTR_CMN_NAME | ATTR_CMN_ERROR)
+    attrs.forkattr = UInt32(ATTR_CMNEXT_PRIVATESIZE | ATTR_CMNEXT_CLONEID | ATTR_CMNEXT_CLONE_REFCNT)
+    let opts = UInt64(FSOPT_PACK_INVAL_ATTRS | FSOPT_ATTR_CMN_EXTENDED)
+    while true {
+        if s.isCancelled() { return }
+        let n = buffer.withUnsafeMutableBytes { raw in getattrlistbulk(fd, &attrs, raw.baseAddress, raw.count, opts) }
+        if n == 0 { return }
+        if n < 0 { s.fail(); return }
+        buffer.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var pos = 0
+            for _ in 0..<n {
+                if pos + 4 + MemoryLayout<attribute_set_t>.size > raw.count { s.fail(); return }
+                let length = Int(base.loadUnaligned(fromByteOffset: pos, as: UInt32.self))
+                if length < 24 || pos + length > raw.count { s.fail(); return }
+                var cursor = pos + 4
+                let returned = base.loadUnaligned(fromByteOffset: cursor, as: attribute_set_t.self)
+                cursor += MemoryLayout<attribute_set_t>.size
+                if returned.commonattr & UInt32(ATTR_CMN_ERROR) != 0 {
+                    let error = base.loadUnaligned(fromByteOffset: cursor, as: Int32.self); cursor += 4
+                    if error != 0 { pos += length; continue }
+                }
+                guard returned.commonattr & UInt32(ATTR_CMN_NAME) != 0 else { pos += length; continue }
+                let refAt = cursor
+                let ref = base.loadUnaligned(fromByteOffset: cursor, as: attrreference_t.self)
+                cursor += MemoryLayout<attrreference_t>.size
+                let a = refAt + Int(ref.attr_dataoffset), b = a + Int(ref.attr_length)
+                guard a >= pos && b <= pos + length && b > a else { pos += length; continue }
+                let name = String(decoding: raw[a..<(b - (raw[b - 1] == 0 ? 1 : 0))], as: UTF8.self)
+                guard let child = byName[name], !s.tree.flags[Int(child)].contains(.isDir) else { pos += length; continue }
+                let ext = returned.forkattr
+                var privateBytes: Int64 = 0, cloneID: UInt64 = 0, refs: UInt32 = 0
+                if ext & UInt32(ATTR_CMNEXT_PRIVATESIZE) != 0 { privateBytes = Int64(bitPattern: base.loadUnaligned(fromByteOffset: cursor, as: UInt64.self)); cursor += 8 }
+                if ext & UInt32(ATTR_CMNEXT_CLONEID) != 0 { cloneID = base.loadUnaligned(fromByteOffset: cursor, as: UInt64.self); cursor += 8 }
+                if ext & UInt32(ATTR_CMNEXT_CLONE_REFCNT) != 0 { refs = base.loadUnaligned(fromByteOffset: cursor, as: UInt32.self) }
+                s.update(child, device: UInt64(directoryStat.st_dev), privateBytes: privateBytes, cloneID: cloneID, refs: refs)
+                pos += length
+            }
+        }
+    }
+}
+
+private func correctedTree(_ s: Enrichment) -> FileTree {
+    let t = s.tree, n = t.parent.count
+    var size = s.counted, priv = s.priv
+    for i in 0..<n where t.flags[i].contains(.isDir) { size[i] = 0; priv[i] = 0 }
+    for i in stride(from: n - 1, through: 1, by: -1) {
+        let p = Int(t.parent[i]); size[p] += size[i]; priv[p] += priv[i]
+    }
+    var children = t.children, first = t.firstChild
+    for i in 0..<n {
+        let a = Int(first[i]), b = a + Int(t.childCount[i])
+        if b > a { children[a..<b].sort { size[Int($0)] > size[Int($1)] } }
+    }
+    var ext = t.extensions.map { ExtensionTotal(name: $0.name, bytes: 0, files: $0.files) }
+    var bytes = [Int64](repeating: 0, count: ext.count)
+    for i in 1..<n where t.extensionIndex[i] >= 0 { bytes[Int(t.extensionIndex[i])] += size[i] }
+    let sorted = ext.indices.sorted { bytes[$0] > bytes[$1] }
+    var ranks = [Int32](repeating: -1, count: ext.count)
+    for (rank, old) in sorted.enumerated() { ranks[old] = Int32(rank) }
+    ext = sorted.map { ExtensionTotal(name: ext[$0].name, bytes: bytes[$0], files: ext[$0].files) }
+    let extIndex = t.extensionIndex.map { $0 < 0 ? -1 : ranks[Int($0)] }
+    var largest = [Int32](repeating: -1, count: n)
+    for i in stride(from: n - 1, through: 1, by: -1) {
+        let candidate = t.flags[i].contains(.isDir) ? largest[i] : Int32(i)
+        let p = Int(t.parent[i])
+        if candidate >= 0 && (largest[p] < 0 || size[Int(candidate)] > size[Int(largest[p])]) { largest[p] = candidate }
+    }
+    let largestType = largest.map { $0 < 0 ? Int32(-1) : extIndex[Int($0)] }
+    let limits = t.limitations.filter { !$0.contains("private and clone attributes disabled") }
+    var result = FileTree(rootPath: t.rootPath, parent: t.parent, firstChild: first, childCount: t.childCount, countedSize: size, privateSize: priv, logicalSize: t.logicalSize, fileCount: t.fileCount, modTime: t.modTime, extensionIndex: extIndex, largestFileType: largestType, flags: s.flags, nameOffset: t.nameOffset, nameLength: t.nameLength, names: t.names, children: children, extensions: ext, unreadablePaths: t.unreadablePaths, limitations: limits, volumeUsedBytes: t.volumeUsedBytes, filesSeen: t.filesSeen, dirsSeen: t.dirsSeen, largestFiles: [])
+    result = FileTree(rootPath: t.rootPath, parent: t.parent, firstChild: first, childCount: t.childCount, countedSize: size, privateSize: priv, logicalSize: t.logicalSize, fileCount: t.fileCount, modTime: t.modTime, extensionIndex: extIndex, largestFileType: largestType, flags: s.flags, nameOffset: t.nameOffset, nameLength: t.nameLength, names: t.names, children: children, extensions: ext, unreadablePaths: t.unreadablePaths, limitations: limits, volumeUsedBytes: t.volumeUsedBytes, filesSeen: t.filesSeen, dirsSeen: t.dirsSeen, largestFiles: result.topFiles(limit: 100))
+    return result
 }

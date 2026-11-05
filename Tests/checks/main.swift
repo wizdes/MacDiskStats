@@ -33,7 +33,13 @@ do {
     let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/cp"); p.arguments = ["-c", a.path, b.path]
     try p.run(); p.waitUntilExit()
     if p.terminationStatus == 0 {
-        let t = try await scan("clones")
+        var phaseOne: FileTree?
+        let phased = try await Scanner.scan(root: dir.path, options: ScanOptions(workers: 2), phase1: { snapshot in phaseOne = snapshot })
+        check("phase 1 clone counts both copies", phaseOne?.countedSize[0] == allocated(a) + allocated(b))
+        check("phase 1 states clone limit", phaseOne?.limitations.contains(where: { $0.contains("clone") }) == true)
+        check("phase 2 clone counts once", phased.countedSize[0] >= allocated(a) && phased.countedSize[0] < allocated(a) + allocated(b))
+        let t = try await Scanner.scan(root: dir.path, options: ScanOptions(workers: 2, twoPhase: false))
+        check("phase 2 equals full scan", phased.countedSize[0] == t.countedSize[0] && phased.privateSize[0] == t.privateSize[0])
         check("cp -c clone counted once", t.countedSize[0] >= allocated(a) && t.countedSize[0] < allocated(a) + allocated(b))
         check("cp -c clone private size", t.privateSize[0] < t.countedSize[0])
         check("cp -c clone shared flag", t.flags.contains(.cloneShared))

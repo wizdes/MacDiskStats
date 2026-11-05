@@ -30,6 +30,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var topTable: NSTableView?
     private var topIDs: [Int32] = []
     private var isScanning = false
+    private var checkingSharedFiles = false
     private var bannerDismissed = false
     private var pendingSelect: String?
     private var snapshotPath: String?
@@ -220,7 +221,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     private func startScan(_ path: String) {
         scanTask?.cancel(); mapTask?.cancel()
-        tree = nil; rootPath = path; zoomNode = 0; selectedNode = nil; highlightedType = nil; bannerDismissed = false
+        tree = nil; checkingSharedFiles = false; rootPath = path; zoomNode = 0; selectedNode = nil; highlightedType = nil; bannerDismissed = false
         let rootURL = URL(fileURLWithPath: path)
         do {
             let values = try rootURL.resourceValues(forKeys: [.volumeAvailableCapacityKey])
@@ -235,32 +236,69 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         scanTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let result = try await Scanner.scan(root: path) { [weak self] report in
+                let result = try await Scanner.scan(root: path, progress: { [weak self] report in
                     Task { @MainActor [weak self] in self?.showProgress(report) }
-                }
+                }, phase1: { [weak self] snapshot in self?.publishTree(snapshot, final: false) })
                 guard !Task.isCancelled else { return }
-                self.tree = result; self.isScanning = false
-                self.progress.stopAnimation(nil); self.progress.isHidden = true
-                self.outline.reloadData(); self.types.reloadData()
-                self.updateStatus(); self.updateBanner()
-                if let pending = self.pendingSelect { self.selectPath(pending); self.pendingSelect = nil }
-                self.renderMap()
+                self.publishTree(result, final: true)
             } catch {
+                if Task.isCancelled { return }
                 self.isScanning = false
+                self.checkingSharedFiles = false
                 self.progress.stopAnimation(nil); self.progress.isHidden = true
-                self.status.stringValue = "Scan failed: \(error.localizedDescription)"
+                self.status.stringValue = self.tree == nil ? "Scan failed: \(error.localizedDescription)" : "Shared file check failed: \(error.localizedDescription)"
                 self.showError("Could not scan \(path): \(error.localizedDescription)")
                 self.makeSnapshotIfNeeded()
             }
         }
     }
+    private func publishTree(_ result: FileTree, final: Bool) {
+        let previous = tree
+        var expanded: [Int32] = []
+        var scrollPoint: NSPoint?
+        if previous != nil {
+            scrollPoint = outline.enclosingScrollView?.contentView.bounds.origin
+            for row in 0..<outline.numberOfRows {
+                if let item = outline.item(atRow: row) as? NSNumber, outline.isItemExpanded(item) { expanded.append(item.int32Value) }
+            }
+        }
+        let selectedType = highlightedType.flatMap { id in previous.flatMap { old in Int(id) < old.extensions.count ? old.extensions[Int(id)].name : nil } }
+        tree = result; checkingSharedFiles = !final; isScanning = !final
+        progress.stopAnimation(nil); progress.isHidden = true
+        outline.headerView?.toolTip = final ? "At least this much space comes back if you delete this." : "Frees is still being calculated."
+        selecting = true
+        outline.reloadData()
+        for id in expanded { outline.expandItem(NSNumber(value: id), expandChildren: false) }
+        if let selectedNode {
+            let row = outline.row(forItem: NSNumber(value: selectedNode))
+            if row >= 0 { outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+        }
+        if let scrollPoint { outline.enclosingScrollView?.contentView.scroll(to: scrollPoint) }
+        selecting = false
+        types.reloadData()
+        if let selectedType, let newIndex = result.extensions.firstIndex(where: { $0.name == selectedType }) {
+            highlightedType = Int32(newIndex)
+            types.selectRowIndexes(IndexSet(integer: newIndex), byExtendingSelection: false)
+        }
+        if let topTable {
+            topIDs = result.largestFiles
+            topTable.reloadData()
+            if let selectedNode, let row = topIDs.firstIndex(of: selectedNode) {
+                topTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            }
+        }
+        updateStatus(); updateBanner()
+        if let pending = pendingSelect { selectPath(pending); pendingSelect = nil }
+        renderMap()
+    }
     private func showProgress(_ report: ScanProgress) {
-        guard isScanning else { return }
+        guard isScanning, tree == nil else { return }
         status.stringValue = "Scanning… \(report.filesSeen.formatted()) files · \(format(report.bytesCounted)) counted"
+        if let rootPath { mapView.showPreview(report.firstTwoLevels, root: rootPath) }
     }
     @objc private func cancelScan() {
         guard isScanning else { return }
-        scanTask?.cancel(); isScanning = false
+        scanTask?.cancel(); isScanning = false; checkingSharedFiles = false
         progress.stopAnimation(nil); progress.isHidden = true
         status.stringValue = "Scan cancelled. Choose a folder to scan again."
     }
@@ -382,7 +420,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             cell.textField?.font = tree.flags[n].contains(.unreadable) ? Tokens.unreadableFont : Tokens.bodyFont
             cell.imageView?.image = tree.flags[n].contains(.isDir) ? folderIcon : fileIcon
         case "Size": cell.textField?.stringValue = tree.flags[n].contains(.unreadable) ? "unreadable" : format(tree.countedSize[n])
-        case "Frees": cell.textField?.stringValue = tree.flags[n].contains(.unreadable) ? "unreadable" : format(tree.privateSize[n])
+        case "Frees": cell.textField?.stringValue = tree.flags[n].contains(.unreadable) ? "unreadable" : (checkingSharedFiles ? "–" : format(tree.privateSize[n]))
         default:
             let root = max(1, tree.countedSize[0]); cell.textField?.stringValue = tree.flags[n].contains(.unreadable) ? "unreadable" : String(format: "%.1f%%", Double(tree.countedSize[n]) / Double(root) * 100)
         }
@@ -471,9 +509,10 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
     private func updateStatus() {
         guard let tree, status != nil else { return }
+        let suffix = checkingSharedFiles ? " · checking shared files…" : ""
         if let id = hoveredNode ?? selectedNode {
             let size = tree.flags[Int(id)].contains(.unreadable) ? "unreadable" : format(tree.countedSize[Int(id)])
-            status.stringValue = "\(tree.path(of: id)) · \(size)"
+            status.stringValue = "\(tree.path(of: id)) · \(size)" + suffix
         } else {
             let isVolumeRoot = tree.rootPath == "/" || tree.rootPath == "/System/Volumes/Data"
             let used = isVolumeRoot ? tree.volumeUsedBytes : tree.countedSize[0]
@@ -481,10 +520,10 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             let gap = isVolumeRoot ? max(0, tree.volumeUsedBytes - tree.countedSize[0]) : 0
             let freeText = free < 0 ? "free unavailable" : "\(format(free)) free"
             if isVolumeRoot {
-                status.stringValue = "\(format(used)) used · \(freeText) · \(format(gap)) not counted · \(tree.unreadablePaths.count) folders unreadable"
+                status.stringValue = "\(format(used)) used · \(freeText) · \(format(gap)) not counted · \(tree.unreadablePaths.count) folders unreadable" + suffix
             } else {
                 let unreadable = tree.unreadablePaths.count
-                status.stringValue = "\(format(tree.countedSize[0])) in this folder · \(freeText) on disk" + (unreadable > 0 ? " · \(unreadable) folders unreadable" : "")
+                status.stringValue = "\(format(tree.countedSize[0])) in this folder · \(freeText) on disk" + (unreadable > 0 ? " · \(unreadable) folders unreadable" : "") + suffix
             }
         }
     }

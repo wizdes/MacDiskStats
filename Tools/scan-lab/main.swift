@@ -107,7 +107,15 @@ func walk(_ root: String, _ kind: String, _ workers: Int, _ size: Int, _ repeatI
                 var attrs = attrlist(); attrs.bitmapcount = UInt16(ATTR_BIT_MAP_COUNT)
                 attrs.commonattr = UInt32(ATTR_CMN_RETURNED_ATTRS) | UInt32(ATTR_CMN_NAME | ATTR_CMN_OBJTYPE | ATTR_CMN_DEVID)
                 attrs.fileattr = UInt32(ATTR_FILE_ALLOCSIZE)
-                if kind != "count" { attrs.commonattr |= UInt32(ATTR_CMN_FILEID | ATTR_CMN_MODTIME | ATTR_CMN_FLAGS); attrs.dirattr = UInt32(ATTR_DIR_MOUNTSTATUS); attrs.fileattr |= UInt32(ATTR_FILE_LINKCOUNT | ATTR_FILE_TOTALSIZE) }
+                let isolated = ["fileid", "modtime", "flags", "mount", "linkcount", "totalsize", "error"].contains(kind)
+                if !isolated && kind != "count" { attrs.commonattr |= UInt32(ATTR_CMN_FILEID | ATTR_CMN_MODTIME | ATTR_CMN_FLAGS); attrs.dirattr = UInt32(ATTR_DIR_MOUNTSTATUS); attrs.fileattr |= UInt32(ATTR_FILE_LINKCOUNT | ATTR_FILE_TOTALSIZE) }
+                if kind == "fileid" { attrs.commonattr |= UInt32(ATTR_CMN_FILEID) }
+                if kind == "modtime" { attrs.commonattr |= UInt32(ATTR_CMN_MODTIME) }
+                if kind == "flags" { attrs.commonattr |= UInt32(ATTR_CMN_FLAGS) }
+                if kind == "mount" { attrs.dirattr = UInt32(ATTR_DIR_MOUNTSTATUS) }
+                if kind == "linkcount" { attrs.fileattr |= UInt32(ATTR_FILE_LINKCOUNT) }
+                if kind == "totalsize" { attrs.fileattr |= UInt32(ATTR_FILE_TOTALSIZE) }
+                if kind == "error" { attrs.commonattr |= UInt32(ATTR_CMN_ERROR) }
                 if kind == "private" { attrs.forkattr = UInt32(ATTR_CMNEXT_PRIVATESIZE) }
                 if kind == "clone" { attrs.forkattr = UInt32(ATTR_CMNEXT_PRIVATESIZE | ATTR_CMNEXT_CLONEID | ATTR_CMNEXT_CLONE_REFCNT) }
                 if kind == "cloneid" { attrs.forkattr = UInt32(ATTR_CMNEXT_CLONEID) }

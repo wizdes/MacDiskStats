@@ -9,6 +9,7 @@ public struct NodeFlags: OptionSet, Sendable {
     public static let cloneShared = Self(rawValue: 8)
     public static let mountPointStopped = Self(rawValue: 16)
     public static let symlink = Self(rawValue: 32)
+    public static let hardlink = Self(rawValue: 64)
 }
 
 public struct ExtensionTotal: Sendable {
@@ -88,9 +89,10 @@ public struct FileTree: Sendable {
 public struct ScanOptions: Sendable {
     public var workers: Int
     public var includePrivateSize: Bool
+    public var twoPhase: Bool
     public var bufferSize: Int
-    public init(workers: Int = 16, includePrivateSize: Bool = true, bufferSize: Int = 131_072) {
-        self.workers = max(1, min(workers, 32)); self.includePrivateSize = includePrivateSize
+    public init(workers: Int = 16, includePrivateSize: Bool = true, twoPhase: Bool = true, bufferSize: Int = 131_072) {
+        self.workers = max(1, min(workers, 32)); self.includePrivateSize = includePrivateSize; self.twoPhase = twoPhase
         self.bufferSize = max(65_536, min(bufferSize, 1_048_576))
     }
 }
