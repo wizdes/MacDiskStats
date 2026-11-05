@@ -10,3 +10,7 @@
 - Reviewer: Astra only, on the user's instruction to save Claude tokens (2026-11-04).
 
 ## Rounds
+
+## Round 1 (Astra, 2026-11-04, on 516546e)
+
+18 findings and 5 uncertain concerns. Root confirmed 1, 9 and 17 in the code; the fix builder verifies the rest.
