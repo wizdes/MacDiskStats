@@ -2,6 +2,17 @@ import AppKit
 import DiskCore
 import QuickLookUI
 
+private struct MapRenderRequest: Sendable {
+    let tree: FileTree
+    let root: Int32
+    let width: Int
+    let height: Int
+    let params: TreemapParams
+    let highlight: Int32?
+    let existing: TreemapLayout?
+    let version: Int
+}
+
 @MainActor
 final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTableViewDataSource, NSTableViewDelegate, @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate {
     private var window: NSWindow!
@@ -17,6 +28,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var tree: FileTree?
     private var liveScan: LiveScan?
     private var liveRows: [Int32: [LiveNode]] = [:]
+    private var expandedIDs = Set<Int32>()
     private var liveTypes: [ExtensionTotal] = []
     private var liveFrame: LiveSnapshot?
     private var liveTickTask: Task<Void, Never>?
@@ -32,6 +44,8 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var expectedTimerFire = Date()
     private var worstStallMs = 0.0
     private var worstTickMs = 0.0
+    private var worstLiveApplyMs = 0.0
+    private var worstLiveOutlineMs = 0.0
     private var phaseOneSeconds = 0.0
     #endif
     private var rootPath: String?
@@ -41,6 +55,8 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var highlightedType: Int32?
     private var scanTask: Task<Void, Never>?
     private var mapTask: Task<Void, Never>?
+    private var renderWork: Task<(TreemapLayout, [UInt8]), Never>?
+    private var pendingRender: MapRenderRequest?
     private var resizeTask: Task<Void, Never>?
     private var renderVersion = 0
     private var scanVersion = 0
@@ -266,13 +282,13 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     private func startScan(_ path: String) {
-        scanTask?.cancel(); mapTask?.cancel(); renderVersion += 1; scanVersion += 1
+        scanTask?.cancel(); renderWork?.cancel(); pendingRender = nil; renderVersion += 1; scanVersion += 1
         let version = scanVersion
-        tree = nil; liveScan = nil; liveFrame = nil; liveRows = [:]; liveTypes = []; liveTickTask?.cancel(); checkingSharedFiles = false; rootPath = path; zoomNode = 0; selectedNode = nil; hoveredNode = nil; highlightedType = nil; bannerDismissed = false
+        tree = nil; liveScan = nil; liveFrame = nil; liveRows = [:]; liveTypes = []; expandedIDs = []; liveTickTask?.cancel(); checkingSharedFiles = false; rootPath = path; zoomNode = 0; selectedNode = nil; hoveredNode = nil; highlightedType = nil; bannerDismissed = false
         liveStarted = Date(); firstLiveRows = nil; firstLiveMap = nil
         #if DEBUG
         if measureLive {
-            worstStallMs = 0; worstTickMs = 0; phaseOneSeconds = 0
+            worstStallMs = 0; worstTickMs = 0; worstLiveApplyMs = 0; worstLiveOutlineMs = 0; phaseOneSeconds = 0
             stallTimer?.cancel()
             expectedTimerFire = Date().addingTimeInterval(0.01)
             let timer = DispatchSource.makeTimerSource(queue: .main)
@@ -318,7 +334,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
                     #endif
                     self.liveTickTask = Task { [weak self] in
                         while let self, self.scanVersion == version, self.tree == nil, !Task.isCancelled {
-                            self.refreshLive()
+                            await self.refreshLive()
                             try? await Task.sleep(for: .milliseconds(self.firstLiveRows == nil ? 2 : 250))
                         }
                     }
@@ -335,7 +351,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
                 #if DEBUG
                 if self.measureLive {
                     self.stallTimer?.cancel(); self.stallTimer = nil
-                    print(String(format: "measure live rows %.1f ms map %.1f ms stall %.1f ms tick %.1f ms phase1 %.3f s phase2 %.3f s files %lld dirs %lld", (self.firstLiveRows ?? -1) * 1000, (self.firstLiveMap ?? -1) * 1000, self.worstStallMs, self.worstTickMs, self.phaseOneSeconds, Date().timeIntervalSince(self.liveStarted) - self.phaseOneSeconds, result.filesSeen, result.dirsSeen))
+                    print(String(format: "measure live rows %.1f ms map %.1f ms stall %.1f ms tick %.1f ms apply %.1f ms outline %.1f ms phase1 %.3f s phase2 %.3f s files %lld dirs %lld", (self.firstLiveRows ?? -1) * 1000, (self.firstLiveMap ?? -1) * 1000, self.worstStallMs, self.worstTickMs, self.worstLiveApplyMs, self.worstLiveOutlineMs, self.phaseOneSeconds, Date().timeIntervalSince(self.liveStarted) - self.phaseOneSeconds, result.filesSeen, result.dirsSeen))
                     fflush(stdout); NSApp.terminate(nil)
                 }
                 #endif
@@ -348,14 +364,24 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
                     fflush(stdout); NSApp.terminate(nil)
                 }
                 #endif
-                self.isScanning = false
-                self.checkingSharedFiles = false
-                self.progress.stopAnimation(nil); self.progress.isHidden = true
-                self.status.stringValue = self.tree == nil ? "Scan failed: \(error.localizedDescription)" : "Shared file check failed: \(error.localizedDescription)"
-                self.showError("Could not scan \(path): \(error.localizedDescription)")
-                self.makeSnapshotIfNeeded()
+                self.finishFailedScan(error, path: path)
             }
         }
+    }
+    private func finishFailedScan(_ error: Error, path: String, presentAlert: Bool = true) {
+        liveTickTask?.cancel(); liveTickTask = nil
+        let failedLive = liveScan
+        liveScan = nil; liveFrame = nil; liveRows = [:]; liveTypes = []
+        if let failedLive { DispatchQueue.global(qos: .utility).async { withExtendedLifetime(failedLive) {} } }
+        if tree == nil {
+            selecting = true; outline.reloadData(); selecting = false
+            types.reloadData(); mapView.clearPreview()
+        }
+        isScanning = false; checkingSharedFiles = false
+        progress.stopAnimation(nil); progress.isHidden = true
+        status.stringValue = tree == nil ? "Scan failed: \(error.localizedDescription)" : "Shared file check failed: \(error.localizedDescription)"
+        if presentAlert { showError("Could not scan \(path): \(error.localizedDescription)") }
+        makeSnapshotIfNeeded()
     }
     private func publishTree(_ result: FileTree, final: Bool) {
         let publishStarted = Date()
@@ -368,15 +394,15 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if !final { phaseOneSeconds = Date().timeIntervalSince(liveStarted) }
         #endif
         let previous = tree
-        var expanded: [Int32] = []
+        let expanded = Array(expandedIDs)
         var scrollPoint: NSPoint?
         if previous != nil || liveScan != nil {
             scrollPoint = outline.enclosingScrollView?.contentView.bounds.origin
-            for row in 0..<outline.numberOfRows {
-                if let item = outline.item(atRow: row) as? NSNumber, outline.isItemExpanded(item) { expanded.append(item.int32Value) }
-            }
         }
-        let selectedType = highlightedType.flatMap { id in previous.flatMap { old in Int(id) < old.extensions.count ? old.extensions[Int(id)].name : nil } }
+        let selectedType = highlightedType.flatMap { id -> String? in
+            let names = previous?.extensions ?? liveTypes
+            return id >= 0 && Int(id) < names.count ? names[Int(id)].name : nil
+        }
         #if DEBUG
         if measureLive { print(String(format: "measure live pre-publish capture %.1f ms", Date().timeIntervalSince(publishStarted) * 1000)) }
         #endif
@@ -429,9 +455,13 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if measureLive { print(String(format: "measure live status and banner %.1f ms", Date().timeIntervalSince(statusStarted) * 1000)) }
         #endif
         if let pending = pendingSelect { selectPath(pending); pendingSelect = nil }
+        let renderScheduledAt = Date()
         renderMap()
+        #if DEBUG
+        if measureLive { print(String(format: "measure live publish render scheduling %.1f ms", Date().timeIntervalSince(renderScheduledAt) * 1000)) }
+        #endif
     }
-    private func refreshLive() {
+    private func refreshLive() async {
         let tickStarted = Date()
         defer {
             #if DEBUG
@@ -441,28 +471,44 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         guard let model = liveScan, tree == nil else { return }
         let oldSelection = selectedNode
         let oldScroll = outline.enclosingScrollView?.contentView.bounds.origin
-        var expanded: [Int32] = []
-        for row in 0..<outline.numberOfRows {
-            if let item = outline.item(atRow: row) as? NSNumber, outline.isItemExpanded(item) { expanded.append(item.int32Value) }
-        }
+        let expanded = Array(expandedIDs)
         let ids = Array(Set([Int32(0), zoomNode] + expanded + (liveRows[zoomNode] ?? []).prefix(Tokens.livePreviewLimit).filter(\.isDirectory).map(\.id)))
-        var changed = false
         let maySort = Date().timeIntervalSince(lastLiveSort) >= 1 && !((outline as? ActionOutlineView)?.pointerInside ?? false) && !((outline as? ActionOutlineView)?.acting ?? false)
-        let frame = model.snapshot(childrenOf: ids)
+        let oldRows = liveRows
+        let (frame, preparedRows, changed) = await Task.detached(priority: .userInitiated) { () -> (LiveSnapshot, [Int32: [LiveNode]], Bool) in
+            let frame = model.snapshot(childrenOf: ids)
+            var prepared: [Int32: [LiveNode]] = [:]
+            var changed = false
+            for id in ids {
+                var rows = frame.children[id] ?? []
+                if maySort { rows.sort { $0.bytes == $1.bytes ? $0.id < $1.id : $0.bytes > $1.bytes } }
+                else if let old = oldRows[id] {
+                    let ranks = Dictionary(uniqueKeysWithValues: old.enumerated().map { ($0.element.id, $0.offset) })
+                    rows.sort { (ranks[$0.id] ?? Int.max) < (ranks[$1.id] ?? Int.max) }
+                }
+                if oldRows[id]?.map(\.id) != rows.map(\.id) { changed = true }
+                prepared[id] = rows
+            }
+            return (frame, prepared, changed)
+        }.value
+        guard !Task.isCancelled, liveScan === model, tree == nil else { return }
+        let applyStarted = Date()
         liveFrame = frame
         for id in ids {
-            var rows = frame.children[id] ?? []
-            if maySort { rows.sort { $0.bytes == $1.bytes ? $0.id < $1.id : $0.bytes > $1.bytes } }
-            else if let old = liveRows[id] {
-                let ranks = Dictionary(uniqueKeysWithValues: old.enumerated().map { ($0.element.id, $0.offset) })
-                rows.sort { (ranks[$0.id] ?? Int.max) < (ranks[$1.id] ?? Int.max) }
-            }
-            if liveRows[id]?.map(\.id) != rows.map(\.id) { changed = true }
+            let rows = preparedRows[id] ?? []
             liveRows[id] = rows
         }
         if maySort { lastLiveSort = Date() }
+        let selectedLiveType = highlightedType.flatMap { id in id >= 0 && Int(id) < liveTypes.count ? liveTypes[Int(id)].name : nil }
         liveTypes = frame.extensions
         types.reloadData()
+        if let selectedLiveType, let newIndex = liveTypes.firstIndex(where: { $0.name == selectedLiveType }) {
+            highlightedType = Int32(newIndex)
+            types.selectRowIndexes(IndexSet(integer: newIndex), byExtendingSelection: false)
+        } else if selectedLiveType != nil {
+            highlightedType = nil
+            types.deselectAll(nil)
+        }
         let wholeVolume = rootPath == "/" || rootPath == "/System/Volumes/Data"
         if wholeVolume && frame.volumeUsedBytes > 0 {
             progress.isIndeterminate = false
@@ -474,6 +520,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             status.stringValue = "\(format(frame.countedBytes)) · \(frame.filesSeen.formatted()) files"
         }
         if changed {
+            let outlineStarted = Date()
             selecting = true
             outline.reloadData()
             for id in expanded { outline.expandItem(NSNumber(value: id), expandChildren: false) }
@@ -483,6 +530,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             }
             if let oldScroll { outline.enclosingScrollView?.contentView.scroll(to: oldScroll) }
             selecting = false
+            #if DEBUG
+            worstLiveOutlineMs = max(worstLiveOutlineMs, Date().timeIntervalSince(outlineStarted) * 1000)
+            #endif
         } else {
             let visible = outline.rows(in: outline.visibleRect)
             if visible.length > 0 { outline.reloadData(forRowIndexes: IndexSet(integersIn: visible.location..<(visible.location + visible.length)), columnIndexes: IndexSet(integersIn: 1..<outline.numberOfColumns)) }
@@ -492,11 +542,14 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             print(String(format: "live first tree row %.1f ms", firstLiveRows! * 1000))
         }
         if Date().timeIntervalSince(lastLiveMap) >= 0.5 { showLiveMap(frame) }
+        #if DEBUG
+        worstLiveApplyMs = max(worstLiveApplyMs, Date().timeIntervalSince(applyStarted) * 1000)
+        #endif
         if let snapshotAtSeconds, Date().timeIntervalSince(liveStarted) >= snapshotAtSeconds { makeSnapshotIfNeeded() }
     }
     private func showLiveMap(_ frame: LiveSnapshot) {
         let rows = frame.children[zoomNode] ?? []
-        guard !rows.isEmpty else { return }
+        guard !rows.isEmpty else { mapView.clearPreview(); return }
         mapView.showPreview(rows: rows, children: frame.children, extensions: frame.extensions, mapTypes: frame.mapTypes, remainder: zoomNode == 0 && (rootPath == "/" || rootPath == "/System/Volumes/Data") ? max(0, frame.volumeUsedBytes - frame.countedBytes) : 0)
         lastLiveMap = Date()
         if firstLiveMap == nil {
@@ -530,32 +583,50 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         }
     }
     private func renderMap(shadeOnly: Bool = false) {
+        let renderEnteredAt = Date()
+        defer {
+            #if DEBUG
+            if measureLive { print(String(format: "measure live renderMap call %.1f ms", Date().timeIntervalSince(renderEnteredAt) * 1000)) }
+            #endif
+        }
         guard let tree, mapView.bounds.width > 0, mapView.bounds.height > 0 else { return }
-        mapTask?.cancel(); renderVersion += 1
+        renderWork?.cancel(); renderVersion += 1
         let version = renderVersion
         let scale = window.backingScaleFactor
         let width = Int((mapView.bounds.width * scale).rounded()), height = Int((mapView.bounds.height * scale).rounded())
         let root = zoomNode, highlight = highlightedType, params = Tokens.mapParams(dark: dark)
         let existing = shadeOnly && renderedRoot == root && mapView.layoutData?.width == width && mapView.layoutData?.height == height ? mapView.layoutData : nil
+        pendingRender = MapRenderRequest(tree: tree, root: root, width: width, height: height, params: params,
+                                         highlight: highlight, existing: existing, version: version)
+        guard mapTask == nil else { return }
         mapTask = Task { [weak self] in
-            let rendered = await Task.detached(priority: .userInitiated) { () -> (TreemapLayout, [UInt8]) in
-                let layout = existing ?? Treemap.layout(tree: tree, rootNode: root, widthPx: width, heightPx: height, params: params)
-                var rgba: [UInt8] = []
-                Treemap.shade(layout, into: &rgba, params: params, highlightExtension: highlight)
-                return (layout, rgba)
-            }.value
-            guard let self, !Task.isCancelled, version == self.renderVersion else { return }
-            self.mapView.layoutData = rendered.0
-            self.renderedRoot = root
-            self.mapView.show(rendered.1, width: width, height: height)
-            self.mapView.selectedNode = self.selectedNode
-            self.makeSnapshotIfNeeded()
-            #if DEBUG
-            if self.measurePending {
-                self.measurePending = false
-                Task { await self.measureUI() }
+            while let self, let request = self.pendingRender {
+                self.pendingRender = nil
+                let work = Task.detached(priority: .userInitiated) { () -> (TreemapLayout, [UInt8]) in
+                    let layout = request.existing ?? Treemap.layout(tree: request.tree, rootNode: request.root,
+                                                                     widthPx: request.width, heightPx: request.height, params: request.params)
+                    guard !Task.isCancelled else { return (layout, []) }
+                    var rgba: [UInt8] = []
+                    Treemap.shade(layout, into: &rgba, params: request.params, highlightExtension: request.highlight)
+                    return (layout, rgba)
+                }
+                self.renderWork = work
+                let rendered = await work.value
+                self.renderWork = nil
+                guard !Task.isCancelled, request.version == self.renderVersion, !rendered.1.isEmpty else { continue }
+                self.mapView.layoutData = rendered.0
+                self.renderedRoot = request.root
+                self.mapView.show(rendered.1, width: request.width, height: request.height)
+                self.mapView.selectedNode = self.selectedNode
+                self.makeSnapshotIfNeeded()
+                #if DEBUG
+                if self.measurePending {
+                    self.measurePending = false
+                    Task { await self.measureUI() }
+                }
+                #endif
             }
-            #endif
+            self?.mapTask = nil
         }
     }
 
@@ -641,20 +712,21 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             guard let node = liveFrame?.nodes[id] else { return nil }
             switch kind {
             case "Name":
-                cell.textField?.stringValue = node.name
+                cell.textField?.stringValue = node.isUnreadable ? "\(node.name)  unreadable" : node.name
+                cell.textField?.font = node.isUnreadable ? Tokens.unreadableFont : Tokens.bodyFont
                 cell.imageView?.image = node.isDirectory ? folderIcon : fileIcon
             case "Size":
-                cell.textField?.stringValue = node.isSizing && node.bytes == 0 ? "" : format(node.bytes)
+                cell.textField?.stringValue = node.isUnreadable ? "unreadable" : (node.isSizing && node.bytes == 0 ? "" : format(node.bytes))
                 cell.textField?.textColor = node.isSizing ? Tokens.muted(dark) : Tokens.text(dark)
                 if let spinner = cell.subviews.compactMap({ $0 as? NSProgressIndicator }).first {
                     let animate = node.isSizing && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
                     spinner.isHidden = !animate
                     if animate { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
                 }
-            case "Frees": cell.textField?.stringValue = "–"
+            case "Frees": cell.textField?.stringValue = node.isUnreadable ? "unreadable" : "–"
             default:
                 let total = liveFrame?.countedBytes ?? 0
-                cell.textField?.stringValue = total > 0 ? String(format: "%.1f%%", Double(node.bytes) / Double(total) * 100) : ""
+                cell.textField?.stringValue = node.isUnreadable ? "unreadable" : (total > 0 ? String(format: "%.1f%%", Double(node.bytes) / Double(total) * 100) : "")
             }
             return cell
         }
@@ -680,8 +752,13 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         selectNode(item.int32Value)
     }
     func outlineViewItemDidExpand(_ notification: Notification) {
-        guard tree == nil, let item = notification.userInfo?["NSObject"] as? NSNumber else { return }
-        liveScan?.prioritize(item.int32Value)
+        guard let item = notification.userInfo?["NSObject"] as? NSNumber else { return }
+        expandedIDs.insert(item.int32Value)
+        if tree == nil { liveScan?.prioritize(item.int32Value) }
+    }
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        guard let item = notification.userInfo?["NSObject"] as? NSNumber else { return }
+        expandedIDs.remove(item.int32Value)
     }
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === types { return tree?.extensions.count ?? liveTypes.count }
@@ -861,10 +938,10 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         NSPasteboard.general.setString(tree.path(of: selectedNode), forType: .string)
     }
     @objc private func quickLook() {
-        guard selectedNode != nil, let panel = QLPreviewPanel.shared() else { return }
+        guard tree != nil, selectedNode != nil, let panel = QLPreviewPanel.shared() else { return }
         panel.dataSource = self; panel.delegate = self; panel.makeKeyAndOrderFront(nil); panel.reloadData()
     }
-    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { selectedNode == nil ? 0 : 1 }
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { tree != nil && selectedNode != nil ? 1 : 0 }
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
         guard let tree, let selectedNode else { return nil }
         return tree.url(of: selectedNode) as NSURL
@@ -922,15 +999,34 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             try? await Task.sleep(for: .milliseconds(5))
         }
         check("bug: tree rows absent until phase one ends", sawLiveRows)
+        if let model = liveScan { zoomNode = 0; showLiveMap(model.snapshot(childrenOf: [0])) }
         check("bug: map and file types stay blank during phase one", sawLiveRows && mapView.hasPreview && types.numberOfRows > 0)
         check("bug: folder has no sizing state during scan", sawSizing)
         check("bug: expanding during scan loses live children", liveFolder.map { outline.isItemExpanded(NSNumber(value: $0)) } == true)
+        var emptyLiveFolder: Int32?
+        if let liveFolder {
+            for _ in 0..<100 {
+                emptyLiveFolder = liveScan?.children(of: liveFolder).first(where: { $0.isDirectory })?.id
+                if emptyLiveFolder != nil { break }
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+        if let emptyLiveFolder, let model = liveScan {
+            zoomNode = emptyLiveFolder
+            showLiveMap(model.snapshot(childrenOf: [emptyLiveFolder]))
+        }
+        check("bug: empty live zoom retains old map hit targets", emptyLiveFolder != nil && !mapView.hasPreview)
+        if let liveFolder { zoomNode = liveFolder; if let model = liveScan { showLiveMap(model.snapshot(childrenOf: [liveFolder])) } }
+        let selectedLiveExtension = liveTypes.first?.name
+        if selectedLiveExtension != nil { types.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+        check("bug: live Quick Look advertises missing item", selectedNode == nil || numberOfPreviewItems(in: QLPreviewPanel.shared()) == 0)
         for _ in 0..<200 where isScanning || tree == nil || mapView.layoutData == nil {
             try? await Task.sleep(for: .milliseconds(50))
         }
         guard let tree else {
             check("fixture scan completed", false); print("e2e \(passed) passed, \(failed) failed"); NSApp.terminate(nil); return
         }
+        check("bug: selected live type changes at final handoff", selectedLiveExtension != nil && highlightedType.flatMap { id in id >= 0 && Int(id) < tree.extensions.count ? tree.extensions[Int(id)].name : nil } == selectedLiveExtension)
         check("bug: live selection and zoom lost across scan phases", liveFolder == nil || selectedNode == liveFolder && zoomNode == liveFolder)
         zoomTop(); await mapTask?.value
         await mapTask?.value
@@ -967,6 +1063,12 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         await mapTask?.value
         Treemap.shade(layout, into: &restored, params: params)
         check("type highlight clears to identical pixels", highlighted != plain && restored == plain)
+        for i in 0..<30 {
+            zoomNode = i.isMultiple(of: 2) ? 0 : (tree.children.first { tree.flags[Int($0)].contains(.isDir) } ?? 0)
+            renderMap()
+        }
+        zoomNode = 0; renderMap(); await mapTask?.value
+        check("bug: rapid zoom queues unbounded renders", pendingRender == nil && renderWork == nil && renderedRoot == 0)
         showLargest()
         check("Top 100 opens", topWindow != nil && !topIDs.isEmpty)
         if let topTable, !topIDs.isEmpty {
@@ -1018,10 +1120,20 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if let current = self.tree, let folder = current.children.first(where: { current.flags[Int($0)].contains(.isDir) }) {
             outline.expandItem(NSNumber(value: folder))
             selectNode(folder, fromMap: true); zoomIn(); await mapTask?.value
+            let clip = outline.enclosingScrollView?.contentView
+            clip?.scroll(to: NSPoint(x: 0, y: 300))
+            let scrollBefore = clip?.bounds.origin.y ?? 0
             publishTree(current, final: true); await mapTask?.value
             check("phase update keeps selection and zoom", selectedNode == folder && zoomNode == folder)
             check("phase update keeps expansion", outline.isItemExpanded(NSNumber(value: folder)))
+            check("bug: phase update loses outline scroll", scrollBefore > 0 && abs((clip?.bounds.origin.y ?? -1) - scrollBefore) < 2)
         } else { check("phase update fixture folder exists", false) }
+        startScan(rootPath)
+        for _ in 0..<200 where (liveScan?.completedDirectories ?? 0) == 0 { try? await Task.sleep(for: .milliseconds(5)) }
+        let oldScanWasActive = (liveScan?.completedDirectories ?? 0) > 0
+        startScan(rootPath)
+        for _ in 0..<200 where isScanning || self.tree == nil { try? await Task.sleep(for: .milliseconds(50)) }
+        check("bug: active rescan publishes stale first scan", oldScanWasActive && !isScanning && self.tree?.rootPath == rootPath && (self.tree?.filesSeen ?? 0) >= 2)
         startScan(rootPath); cancelScan()
         check("Cancel action stops scan", !isScanning && status.stringValue.contains("cancelled"))
         e2eCancelledLive = false; e2eCancelOnLive = true
@@ -1030,6 +1142,14 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             try? await Task.sleep(for: .milliseconds(5))
         }
         check("bug: cancelling during live updates leaves stale rows", e2eCancelledLive && liveScan == nil && outline.numberOfRows == 0 && mapView.layoutData == nil && !isScanning)
+        startScan(rootPath)
+        for _ in 0..<200 where liveScan == nil { try? await Task.sleep(for: .milliseconds(5)) }
+        let hadFailedLive = liveScan != nil
+        scanTask?.cancel(); scanVersion += 1
+        finishFailedScan(Scanner.ScanError.storageLimit, path: rootPath, presentAlert: false)
+        let failedStatus = status.stringValue
+        try? await Task.sleep(for: .milliseconds(350))
+        check("bug: failed live scan keeps refreshing stale rows", hadFailedLive && liveScan == nil && liveTickTask == nil && outline.numberOfRows == 0 && !mapView.hasPreview && !isScanning && status.stringValue == failedStatus)
         print("e2e \(passed) passed, \(failed) failed")
         fflush(stdout)
         NSApp.terminate(nil)

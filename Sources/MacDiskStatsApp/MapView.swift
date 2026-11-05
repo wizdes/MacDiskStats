@@ -59,7 +59,7 @@ import DiskCore
     func showPreview(rows: [LiveNode], children: [Int32: [LiveNode]], extensions: [ExtensionTotal], mapTypes: [Int32: [ExtensionTotal]], remainder: Int64) {
         guard bounds.width > 0, bounds.height > 0 else { return }
         let visible = Array(rows.filter { $0.bytes > 0 || $0.isDirectory }.prefix(Tokens.livePreviewLimit))
-        guard !visible.isEmpty || remainder > 0 else { return }
+        guard !visible.isEmpty || remainder > 0 else { clearPreview(); return }
         func visibleBytes(_ item: LiveNode) -> Int64 { max(item.bytes, mapTypes[item.id]?.reduce(0) { $0 + $1.bytes } ?? 0, 1) }
         let sum = visible.reduce(Double(remainder)) { $0 + Double(visibleBytes($1)) }
         let colors = Dictionary(uniqueKeysWithValues: extensions.enumerated().map { ($0.element.name, $0.offset) })

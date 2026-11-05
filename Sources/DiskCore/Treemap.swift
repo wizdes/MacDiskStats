@@ -81,10 +81,20 @@ private final class PixelWriter: @unchecked Sendable {
     let pointer: UnsafeMutablePointer<UInt8>
     init(_ pointer: UnsafeMutablePointer<UInt8>) { self.pointer = pointer }
 }
+private final class RenderCancellation: @unchecked Sendable {
+    let task: UnsafeCurrentTask?
+    init() { task = withUnsafeCurrentTask { $0 } }
+    var isCancelled: Bool { task?.isCancelled == true }
+}
 
 public enum Treemap {
     public static func layout(tree: FileTree, rootNode: Int32, widthPx: Int, heightPx: Int, params: TreemapParams = TreemapParams()) -> TreemapLayout {
         let w = max(0, widthPx), h = max(0, heightPx)
+        if Task<Never, Never>.isCancelled {
+            return TreemapLayout(width: 0, height: 0, nodeIDs: [], x: [], y: [], widths: [], heights: [],
+                                 surfaceX2: [], surfaceX: [], surfaceY2: [], surfaceY: [], colorIndex: [],
+                                 pixelOwner: [], folderEdge: [], nodeBox: [])
+        }
         var ids: [Int32] = [], xx: [Int32] = [], yy: [Int32] = [], ww: [Int32] = [], hh: [Int32] = []
         var ax: [Float] = [], bx: [Float] = [], ay: [Float] = [], by: [Float] = [], colors: [Int32] = []
         var owner = [Int32](repeating: -1, count: w * h)
@@ -118,6 +128,7 @@ public enum Treemap {
             return max(short * short * hi / sq, sq / (short * short * lo))
         }
         func visit(_ node: Int32, _ r: Region, _ surface: Surface, _ level: Int) {
+            if Task<Never, Never>.isCancelled { return }
             let dir = tree.flags[Int(node)].contains(.isDir)
             let terminal = !dir || r.w <= 2 || r.h <= 2 || tree.childCount[Int(node)] == 0
             add(node, r, surface, terminal)
@@ -133,6 +144,7 @@ public enum Treemap {
             var remaining = r, used: Int64 = 0, start = 0
             let nextHeight = params.ridgeHeight * pow(params.ridgeFactor, Float(level))
             while start < positiveCount && remaining.w > 0 && remaining.h > 0 {
+                if Task<Never, Never>.isCancelled { return }
                 let horizontal = remaining.w < remaining.h
                 let short = Double(min(remaining.w, remaining.h))
                 let scale = Double(remaining.w) * Double(remaining.h) / Double(max(1, total - Int64(used)))
@@ -169,7 +181,13 @@ public enum Treemap {
             }
         }
         visit(rootNode, Region(x: 0, y: 0, w: w, h: h), Surface(), 0)
+        if Task<Never, Never>.isCancelled {
+            return TreemapLayout(width: 0, height: 0, nodeIDs: [], x: [], y: [], widths: [], heights: [],
+                                 surfaceX2: [], surfaceX: [], surfaceY2: [], surfaceY: [], colorIndex: [],
+                                 pixelOwner: [], folderEdge: [], nodeBox: [])
+        }
         for i in ids.indices where ids[i] != rootNode && tree.flags[Int(ids[i])].contains(.isDir) {
+            if Task<Never, Never>.isCancelled { break }
             let left = Int(xx[i]), top = Int(yy[i]), right = left + Int(ww[i]) - 1, bottom = top + Int(hh[i]) - 1
             if right <= left || bottom <= top { continue }
             for px in left...right { edges[top * w + px] = 1; edges[bottom * w + px] = 1 }
@@ -180,15 +198,19 @@ public enum Treemap {
 
     public static func shade(_ layout: TreemapLayout, into rgba: inout [UInt8], params: TreemapParams = TreemapParams(), highlightExtension: Int32? = nil) {
         let width = layout.width, height = layout.height
+        if Task<Never, Never>.isCancelled { rgba = []; return }
         guard width > 0 && height > 0 else { rgba = []; return }
         if rgba.count != width * height * 4 { rgba = [UInt8](repeating: 0, count: width * height * 4) }
+        let cancellation = RenderCancellation()
         rgba.withUnsafeMutableBufferPointer { buffer in
             guard let base = buffer.baseAddress else { return }
             let writer = PixelWriter(base)
             let bands = min(max(1, ProcessInfo.processInfo.activeProcessorCount), height)
             DispatchQueue.concurrentPerform(iterations: bands) { band in
+                if cancellation.isCancelled { return }
                 let y0 = band * height / bands, y1 = (band + 1) * height / bands
                 for py in y0..<y1 {
+                    if cancellation.isCancelled { return }
                     for px in 0..<width {
                         let at = py * width + px, out = at * 4
                         let i = Int(layout.pixelOwner[at])
@@ -209,5 +231,6 @@ public enum Treemap {
                 }
             }
         }
+        if Task<Never, Never>.isCancelled { rgba = [] }
     }
 }

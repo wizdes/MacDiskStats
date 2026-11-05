@@ -34,7 +34,7 @@ private struct Entry {
     var cloneID: UInt64 = 0
     var cloneRefs: UInt32 = 0
 }
-private struct Job { let id: Int32; let path: String; let key: Key; let firmlink: Bool }
+private struct Job { let id: Int32; let path: String; let key: Key; let firmlink: Bool; let rawPath: Bool }
 public struct LiveNode: Sendable {
     public let id: Int32
     public let parent: Int32
@@ -42,6 +42,7 @@ public struct LiveNode: Sendable {
     public let bytes: Int64
     public let isDirectory: Bool
     public let isSizing: Bool
+    public let isUnreadable: Bool
     public let extensionName: String
 }
 public struct LiveSnapshot: Sendable {
@@ -119,16 +120,12 @@ public final class LiveScan: @unchecked Sendable {
     public func prioritize(_ id: Int32) {
         state.lock.lock(); defer { state.lock.unlock() }
         guard id >= 0, Int(id) < state.parent.count else { return }
-        var at = id
-        while at >= 0 {
-            if let index = state.queue.indices.dropFirst(state.queueHead).first(where: { state.queue[$0].id == at }) {
-                state.queue.swapAt(state.queueHead, index)
-                state.lock.broadcast()
-                return
-            }
-            at = state.parent[Int(at)]
-        }
-        state.priorityIDs.insert(id)
+        state.priorityRoots.insert(id)
+        let pending = state.queue[state.queueHead...]
+        let first = pending.filter { state.isDescendant($0.id, of: id) }
+        let rest = pending.filter { !state.isDescendant($0.id, of: id) }
+        state.queue.replaceSubrange(state.queueHead..., with: first + rest)
+        state.lock.broadcast()
     }
 }
 private final class State: @unchecked Sendable {
@@ -176,7 +173,7 @@ private final class State: @unchecked Sendable {
     var pendingWork: [Int32] = [1]
     var completedDirectories = 0
     var completionOrder: [Int] = [0]
-    var priorityIDs = Set<Int32>()
+    var priorityRoots = Set<Int32>()
     var progress: (@Sendable (ScanProgress) -> Void)?
     let links = Shards()
     let clones = Shards()
@@ -192,7 +189,7 @@ private final class State: @unchecked Sendable {
         rootPath = path; rootFD = fd; rootDevice = device; self.dataDevice = dataDevice; self.volumeUsed = volumeUsed; self.options = options; self.progress = progress; self.liveEnabled = liveEnabled
         if !options.includePrivateSize { limitations.insert("private and clone attributes disabled; shared clone bytes may be counted twice") }
         let rootKey = Key(device: device, inode: inode)
-        seenDirs.insert(rootKey); openedDirs.insert(rootKey); queue = [Job(id: 0, path: ".", key: rootKey, firmlink: false)]
+        seenDirs.insert(rootKey); openedDirs.insert(rootKey); queue = [Job(id: 0, path: ".", key: rootKey, firmlink: false, rawPath: false)]
     }
     deinit { close(rootFD) }
     private func internExtension(_ name: UnsafeRawBufferPointer) -> Int32 {
@@ -226,6 +223,25 @@ private final class State: @unchecked Sendable {
         return j
     }
     func isCancelled() -> Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    func scanResult() -> (limited: Bool, cancelled: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        return (storageLimit, cancelled)
+    }
+    func isDescendant(_ id: Int32, of root: Int32) -> Bool {
+        var at = id
+        while at >= 0 {
+            if at == root { return true }
+            at = parent[Int(at)]
+        }
+        return false
+    }
+    func addLiveAncestors(_ bytes: Int64, below id: Int32) {
+        guard liveEnabled && bytes > 0 else { return }
+        lock.lock()
+        var at = id
+        while at >= 0 { liveBytes[Int(at)] += bytes; at = parent[Int(at)] }
+        lock.unlock()
+    }
     func finished(_ id: Int32) {
         lock.lock(); active -= 1
         if liveEnabled {
@@ -235,7 +251,6 @@ private final class State: @unchecked Sendable {
             pendingWork[Int(at)] -= 1
             while pendingWork[Int(at)] == 0 && at > 0 {
                 let p = parent[Int(at)]
-                liveBytes[Int(p)] += liveBytes[Int(at)]
                 pendingWork[Int(p)] -= 1
                 at = p
             }
@@ -250,9 +265,10 @@ private final class State: @unchecked Sendable {
         return LiveNode(id: id, parent: parent[i], name: id == 0 ? rootPath : FileTree.displayName(bytes: Array(names[a..<b])),
                         bytes: liveBytes[i], isDirectory: flags[i].contains(.isDir),
                         isSizing: flags[i].contains(.isDir) && pendingWork[i] > 0,
+                        isUnreadable: flags[i].contains(.unreadable),
                         extensionName: ext >= 0 ? String(decoding: extensionBytes[Int(ext)], as: UTF8.self) : "")
     }
-    func add(_ e: Entry, parent p: Int32, path: String, forceUnreadable: Bool = false) {
+    func add(_ e: Entry, parent p: Int32, path: String, rawPath: Bool = false, forceUnreadable: Bool = false) -> Int64 {
         let isDir = e.type == UInt32(VDIR.rawValue)
         let isLink = e.type == UInt32(VLNK.rawValue)
         var f: NodeFlags = []
@@ -264,22 +280,21 @@ private final class State: @unchecked Sendable {
         var privateSize = isDir || !options.includePrivateSize ? 0 : max(0, e.privateBytes)
         if !isDir && !isLink && e.links > 1 {
             f.insert(.hardlink)
-            privateSize = 0
-            if !links.insert(key) { size = 0; f = .hardlinkDup }
+            if !links.insert(key) { size = 0; f.insert(.hardlinkDup) }
         }
         if !isDir && !isLink && size > 0 && e.cloneRefs > 1 && e.cloneID != 0 {
             let clone = Key(device: e.device, inode: e.cloneID)
             if !clones.insert(clone) { size = privateSize; f.insert(.cloneShared) }
         }
+        if f.contains(.hardlink) { privateSize = 0 }
         lock.lock()
         guard Scanner.indexFits(self.parent.count) && Scanner.indexFits(names.count, appending: e.name.count) && Scanner.indexFits(extensionBytes.count) else {
-            storageLimit = true; cancelled = true; lock.broadcast(); lock.unlock(); return
+            storageLimit = true; cancelled = true; lock.broadcast(); lock.unlock(); return 0
         }
         let id = Int32(self.parent.count)
         self.parent.append(p); device.append(e.device); inode.append(e.inode); linkCount.append(e.links); counted.append(size); priv.append(privateSize)
         if liveEnabled {
             childIDs.append([]); childIDs[Int(p)].append(id); liveBytes.append(isDir ? 0 : size); pendingWork.append(isDir ? 1 : 0); completionOrder.append(0)
-            if !isDir { liveBytes[Int(p)] += size }
         }
         logical.append(isDir ? 0 : max(0, e.logical)); files.append(isDir ? 0 : 1)
         mod.append(e.mod); flags.append(f)
@@ -309,8 +324,8 @@ private final class State: @unchecked Sendable {
             else if !seenDirs.insert(key).inserted { flags[Int(id)].insert(.mountPointStopped) }
             else {
                 if liveEnabled { pendingWork[Int(p)] += 1 }
-                let job = Job(id: id, path: path, key: key, firmlink: firmlink)
-                if priorityIDs.remove(id) != nil { queue.insert(job, at: queueHead) }
+                let job = Job(id: id, path: path, key: key, firmlink: firmlink, rawPath: rawPath)
+                if priorityRoots.contains(where: { isDescendant(id, of: $0) }) { queue.insert(job, at: queueHead) }
                 else { queue.append(job) }
                 lock.broadcast()
             }
@@ -323,9 +338,10 @@ private final class State: @unchecked Sendable {
             let totals = levelBytes.map { (path: relativePath($0.key), bytes: $0.value) }
             let info = ScanProgress(filesSeen: filesSeen, bytesCounted: runningBytes, firstTwoLevels: totals)
             let callback = progress
-            lock.unlock(); callback?(info); return
+            lock.unlock(); callback?(info); return size
         }
         lock.unlock()
+        return size
     }
     func markUnreadable(_ id: Int32) {
         lock.lock(); if !flags[Int(id)].contains(.unreadable) { flags[Int(id)].insert(.unreadable); unreadable.append(id) }; lock.unlock()
@@ -407,8 +423,9 @@ public enum Scanner {
                 }
                 DispatchQueue.global().async {
                     group.wait()
-                    if state.storageLimit { continuation.resume(throwing: ScanError.storageLimit) }
-                    else if state.cancelled { continuation.resume(throwing: ScanError.cancelled) }
+                    let result = state.scanResult()
+                    if result.limited { continuation.resume(throwing: ScanError.storageLimit) }
+                    else if result.cancelled { continuation.resume(throwing: ScanError.cancelled) }
                     else { continuation.resume(returning: finish(state)) }
                 }
             }
@@ -451,8 +468,8 @@ private func openDirectory(rootFD: Int32, components: [DirectoryPart], allowedDe
 }
 
 private func scanDirectory(_ job: Job, _ s: State, _ buffer: inout [UInt8]) {
-    var fd = openat(s.rootFD, job.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-    if fd < 0 && errno == ENAMETOOLONG {
+    var fd = job.rawPath ? -1 : openat(s.rootFD, job.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    if job.rawPath || fd < 0 && errno == ENAMETOOLONG {
         fd = openDirectory(rootFD: s.rootFD, components: s.directoryComponents(job.id), allowedDevices: [s.rootDevice, s.dataDevice])
     }
     if fd < 0 { if errno == EXDEV { s.markMountStop(job.id) } else { s.markUnreadable(job.id) }; return }
@@ -492,6 +509,8 @@ private func parseRecords(_ bytes: [UInt8], count: Int, parent: Job, state s: St
     bytes.withUnsafeBytes { raw in
         guard let base = raw.baseAddress else { return }
         var pos = 0
+        var batchBytes: Int64 = 0
+        defer { s.addLiveAncestors(batchBytes, below: parent.id) }
         for recordIndex in 0..<count {
             if recordIndex & 255 == 0 && s.isCancelled() { return }
             if pos > raw.count - 4 { s.limit("malformed bulk attribute record"); s.markUnreadable(parent.id); return }
@@ -531,11 +550,14 @@ private func parseRecords(_ bytes: [UInt8], count: Int, parent: Job, state s: St
             if ext & UInt32(ATTR_CMNEXT_CLONE_REFCNT) != 0 { guard let value = take(UInt32.self) else { s.markUnreadable(parent.id); return }; e.cloneRefs = value }
             if !e.name.isEmpty && !(e.name.count == 1 && e.name[0] == 46) && !(e.name.count == 2 && e.name[0] == 46 && e.name[1] == 46) {
                 let relative: String
+                var rawPath = parent.rawPath
                 if e.type == UInt32(VDIR.rawValue) {
-                    let name = String(decoding: e.name, as: UTF8.self)
+                    let decoded = String(bytes: e.name, encoding: .utf8)
+                    let name = decoded ?? String(decoding: e.name, as: UTF8.self)
+                    rawPath = rawPath || decoded == nil
                     relative = parent.id == 0 ? name : parent.path + "/" + name
                 } else { relative = "" }
-                s.add(e, parent: parent.id, path: relative)
+                batchBytes += s.add(e, parent: parent.id, path: relative, rawPath: rawPath)
             }
             pos += length
         }
@@ -545,6 +567,8 @@ private func parseRecords(_ bytes: [UInt8], count: Int, parent: Job, state s: St
 private func fallback(_ fd: Int32, _ job: Job, _ s: State) {
     let dupFD = dup(fd); guard dupFD >= 0, let dir = fdopendir(dupFD) else { if dupFD >= 0 { close(dupFD) }; s.markUnreadable(job.id); return }
     defer { closedir(dir) }
+    var batchBytes: Int64 = 0
+    defer { s.addLiveAncestors(batchBytes, below: job.id) }
     while let d = readdir(dir) {
         if s.isCancelled() { return }
         withUnsafePointer(to: d.pointee.d_name) { tuple in tuple.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { pointer in
@@ -561,13 +585,15 @@ private func fallback(_ fd: Int32, _ job: Job, _ s: State) {
             e.type = (st.st_mode & S_IFMT) == S_IFDIR ? UInt32(VDIR.rawValue) : ((st.st_mode & S_IFMT) == S_IFLNK ? UInt32(VLNK.rawValue) : UInt32(VREG.rawValue))
             e.allocated = Int64(st.st_blocks) * 512; e.logical = st.st_size; e.mod = Int64(st.st_mtimespec.tv_sec)
             let relative = e.type == UInt32(VDIR.rawValue) ? (job.id == 0 ? name : job.path + "/" + name) : ""
-            s.add(e, parent: job.id, path: relative)
+            batchBytes += s.add(e, parent: job.id, path: relative,
+                                rawPath: job.rawPath || (e.type == UInt32(VDIR.rawValue) && String(bytes: (0..<length).map { UInt8(bitPattern: pointer[$0]) }, encoding: .utf8) == nil))
         } }
     }
 }
 
 private func finish(_ s: State) -> FileTree {
     let n = s.parent.count
+    var counted = s.counted
     var childLists = Array(repeating: [Int32](), count: n)
     for i in 1..<n { childLists[Int(s.parent[i])].append(Int32(i)) }
     var order: [Int32] = [0], idx = 0
@@ -579,21 +605,21 @@ private func finish(_ s: State) -> FileTree {
         let candidate = s.flags[Int(id)].contains(.isDir) ? largestNode[Int(id)] : id
         if candidate >= 0 {
             let old = largestNode[p]
-            if old < 0 || s.counted[Int(candidate)] > s.counted[Int(old)] { largestNode[p] = candidate }
+            if old < 0 || counted[Int(candidate)] > counted[Int(old)] { largestNode[p] = candidate }
         }
-        s.counted[p] += s.counted[Int(id)]; s.priv[p] += s.priv[Int(id)]
+        counted[p] += counted[Int(id)]; s.priv[p] += s.priv[Int(id)]
         s.logical[p] += s.logical[Int(id)]; s.files[p] += s.files[Int(id)]
     }
     var children: [Int32] = [], first = Array(repeating: Int32(0), count: n), counts = Array(repeating: Int32(0), count: n)
     for i in 0..<n {
-        childLists[i].sort { s.counted[Int($0)] > s.counted[Int($1)] }
+        childLists[i].sort { counted[Int($0)] > counted[Int($1)] }
         first[i] = Int32(children.count); counts[i] = Int32(childLists[i].count)
         children.append(contentsOf: childLists[i])
     }
     var extBytes = [Int64](repeating: 0, count: s.extensionBytes.count)
     var extFiles = [Int64](repeating: 0, count: s.extensionBytes.count)
     for i in 1..<n where s.extensionIDs[i] >= 0 {
-        let e = Int(s.extensionIDs[i]); extBytes[e] += s.counted[i]; extFiles[e] += 1
+        let e = Int(s.extensionIDs[i]); extBytes[e] += counted[i]; extFiles[e] += 1
     }
     let sorted = s.extensionBytes.indices.sorted { extBytes[$0] > extBytes[$1] }
     var rank = [Int32](repeating: -1, count: sorted.count)
@@ -601,10 +627,10 @@ private func finish(_ s: State) -> FileTree {
     let extIndex = s.extensionIDs.map { $0 < 0 ? -1 : rank[Int($0)] }
     let largestFileType = largestNode.map { $0 < 0 ? Int32(-1) : extIndex[Int($0)] }
     let extensions = sorted.map { id in ExtensionTotal(name: String(decoding: s.extensionBytes[id], as: UTF8.self), bytes: extBytes[id], files: extFiles[id]) }
-    var tree = FileTree(rootPath: s.rootPath, parent: s.parent, device: s.device, inode: s.inode, linkCount: s.linkCount, firstChild: first, childCount: counts, countedSize: s.counted, privateSize: s.priv, logicalSize: s.logical, fileCount: s.files, modTime: s.mod, extensionIndex: extIndex, largestFileType: largestFileType, flags: s.flags, nameOffset: s.offsets, nameLength: s.lengths, names: s.names, children: children, extensions: extensions, unreadablePaths: [], limitations: s.limitations.sorted(), volumeUsedBytes: s.volumeUsed, filesSeen: s.filesSeen, dirsSeen: s.dirsSeen, largestFiles: [])
+    var tree = FileTree(rootPath: s.rootPath, parent: s.parent, device: s.device, inode: s.inode, linkCount: s.linkCount, firstChild: first, childCount: counts, countedSize: counted, privateSize: s.priv, logicalSize: s.logical, fileCount: s.files, modTime: s.mod, extensionIndex: extIndex, largestFileType: largestFileType, flags: s.flags, nameOffset: s.offsets, nameLength: s.lengths, names: s.names, children: children, extensions: extensions, unreadablePaths: [], limitations: s.limitations.sorted(), volumeUsedBytes: s.volumeUsed, filesSeen: s.filesSeen, dirsSeen: s.dirsSeen, largestFiles: [])
     let paths = s.unreadable.map { tree.path(of: $0) }
     let largest = tree.topFiles(limit: 100)
-    tree = FileTree(rootPath: s.rootPath, parent: s.parent, device: s.device, inode: s.inode, linkCount: s.linkCount, firstChild: first, childCount: counts, countedSize: s.counted, privateSize: s.priv, logicalSize: s.logical, fileCount: s.files, modTime: s.mod, extensionIndex: extIndex, largestFileType: largestFileType, flags: s.flags, nameOffset: s.offsets, nameLength: s.lengths, names: s.names, children: children, extensions: extensions, unreadablePaths: paths, limitations: s.limitations.sorted(), volumeUsedBytes: s.volumeUsed, filesSeen: s.filesSeen, dirsSeen: s.dirsSeen, largestFiles: largest)
+    tree = FileTree(rootPath: s.rootPath, parent: s.parent, device: s.device, inode: s.inode, linkCount: s.linkCount, firstChild: first, childCount: counts, countedSize: counted, privateSize: s.priv, logicalSize: s.logical, fileCount: s.files, modTime: s.mod, extensionIndex: extIndex, largestFileType: largestFileType, flags: s.flags, nameOffset: s.offsets, nameLength: s.lengths, names: s.names, children: children, extensions: extensions, unreadablePaths: paths, limitations: s.limitations.sorted(), volumeUsedBytes: s.volumeUsed, filesSeen: s.filesSeen, dirsSeen: s.dirsSeen, largestFiles: largest)
     return tree
 }
 
@@ -698,6 +724,10 @@ private final class Enrichment: @unchecked Sendable {
     func noteSkip() { lock.lock(); skipped = true; lock.unlock() }
     func fail() { lock.lock(); failed = true; cancelled = true; lock.unlock() }
     func isCancelled() -> Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    func result() -> (failed: Bool, cancelled: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        return (failed, cancelled)
+    }
 }
 
 private func enrich(_ tree: FileTree, options: ScanOptions, progress: (@Sendable (Int, Int) -> Void)?) async throws -> FileTree {
@@ -717,8 +747,9 @@ private func enrich(_ tree: FileTree, options: ScanOptions, progress: (@Sendable
             }
             DispatchQueue.global().async {
                 group.wait()
-                if state.failed { continuation.resume(throwing: Scanner.ScanError.cannotOpen(tree.rootPath, EIO)) }
-                else if state.cancelled { continuation.resume(throwing: Scanner.ScanError.cancelled) }
+                let result = state.result()
+                if result.failed { continuation.resume(throwing: Scanner.ScanError.cannotOpen(tree.rootPath, EIO)) }
+                else if result.cancelled { continuation.resume(throwing: Scanner.ScanError.cancelled) }
                 else { continuation.resume(returning: correctedTree(state)) }
             }
         }

@@ -1,13 +1,14 @@
 #!/bin/zsh
 set -euo pipefail
-scripts/build.sh release
+if [[ ${1:-} == --built ]]; then probe_build=build/release
+else scripts/build.sh release; probe_build=build; fi
 export TMPDIR="$(pwd)/build/tmp/"
 export CLANG_MODULE_CACHE_PATH="$(pwd)/build/module-cache"
-probe_dir=$(mktemp -d)
-trap 'rm -rf "$probe_dir"' EXIT
+probe_dir=$(mktemp -d "build/tmp/mds-probe.XXXXXX")
+trap 'rm -r "$probe_dir"' EXIT
 app="$probe_dir/MacDiskStatsProbe.app"
 mkdir -p "$app/Contents/MacOS"
-swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" -O -I build scripts/sandbox-probe.swift build/libDiskCore.a -o "$app/Contents/MacOS/MacDiskStatsProbe"
+swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" -O -I "$probe_build" scripts/sandbox-probe.swift "$probe_build/libDiskCore.a" -o "$app/Contents/MacOS/MacDiskStatsProbe"
 cat > "$probe_dir/entitlements.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -23,4 +24,4 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 PLIST
 codesign --force --sign - --entitlements "$probe_dir/entitlements.plist" "$app"
 "$app/Contents/MacOS/MacDiskStatsProbe"
-build/macdiskstats-bench "$HOME" --json
+"$probe_build/macdiskstats-bench" "$HOME" --json

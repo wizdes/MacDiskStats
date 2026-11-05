@@ -53,6 +53,55 @@ private final class LiveScanBox: @unchecked Sendable {
         verify("live IDs differ from final tree", targetRow.map { result.path(of: $0.id).hasSuffix("/target") } == true)
     } catch { verify("live scan setup: \(error)", false) }
     do {
+        let root = try folder("bug-live-ancestor-growth")
+        let outer = root.appendingPathComponent("outer", isDirectory: true)
+        let inner = outer.appendingPathComponent("inner", isDirectory: true)
+        try fm.createDirectory(at: inner, withIntermediateDirectories: true)
+        for i in 0..<12_000 { try put(inner.appendingPathComponent("f\(i)"), 4096) }
+        let box = LiveScanBox()
+        let task = Task { try await Scanner.scan(root: root.path, options: ScanOptions(workers: 1, twoPhase: false), live: { box.set($0) }) }
+        var sawMidScan = false
+        for _ in 0..<2000 {
+            if let model = box.get(), let outer = model.children(of: 0).first(where: { $0.name == "outer" }),
+               let inner = model.children(of: outer.id).first(where: { $0.name == "inner" }) {
+                let frame = model.snapshot(childrenOf: [0, outer.id])
+                if inner.bytes > 0 && inner.isSizing {
+                    sawMidScan = true
+                    verify("live ancestor bytes stay zero during descendant scan", frame.children[0]?.first?.bytes == inner.bytes && frame.countedBytes >= inner.bytes)
+                    break
+                }
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        _ = try await task.value
+        verify("live ancestor sampled during active scan", sawMidScan)
+    } catch { verify("live ancestor setup: \(error)", false) }
+    do {
+        let dir = try folder("bug-live-unreadable")
+        let blocked = dir.appendingPathComponent("blocked")
+        try fm.createDirectory(at: blocked, withIntermediateDirectories: true)
+        guard chmod(blocked.path, 0) == 0 else { throw Scanner.ScanError.cannotOpen(blocked.path, errno) }
+        defer { _ = chmod(blocked.path, 0o700) }
+        let box = LiveScanBox()
+        _ = try await Scanner.scan(root: dir.path, options: ScanOptions(workers: 1, twoPhase: false), live: { box.set($0) })
+        let unreadable = box.get()?.children(of: 0).first(where: { $0.name == "blocked" })
+        verify("live unreadable directory appears empty and successful", unreadable?.isUnreadable == true && unreadable?.isSizing == false)
+    } catch { verify("live unreadable setup: \(error)", false) }
+    do {
+        let dir = try folder("bug-cancelled-render")
+        try put(dir.appendingPathComponent("box.bin"), 1_000_000)
+        let tree = try await scan(dir, twoPhase: false)
+        let work = Task.detached { () -> Int in
+            let layout = Treemap.layout(tree: tree, rootNode: 0, widthPx: 1600, heightPx: 1200)
+            var pixels: [UInt8] = []
+            Treemap.shade(layout, into: &pixels)
+            return pixels.count
+        }
+        work.cancel()
+        let count = await work.value
+        verify("cancelled render still shades full image", count == 0)
+    } catch { verify("cancelled render setup: \(error)", false) }
+    do {
         let dir = try folder("extra-priority")
         for i in 0..<500 {
             let sub = dir.appendingPathComponent(String(format: "%04d", i), isDirectory: true)
@@ -75,6 +124,106 @@ private final class LiveScanBox: @unchecked Sendable {
         print("priority target finished at directory \(order) of 501; \(completedAtRequest) were done when requested (without priority: about 501)")
         verify("priority request leaves target at queue tail", order > 0 && order <= completedAtRequest + 2)
     } catch { verify("priority scan setup: \(error)", false) }
+    do {
+        let dir = try folder("bug-priority-subtree")
+        for i in 0..<150 {
+            let sub = dir.appendingPathComponent(String(format: "%03d", i))
+            try fm.createDirectory(at: sub, withIntermediateDirectories: true)
+            for f in 0..<200 {
+                let fd = open(sub.appendingPathComponent("f\(f)").path, O_CREAT | O_WRONLY, 0o600)
+                guard fd >= 0 else { throw Scanner.ScanError.cannotOpen(sub.path, errno) }
+                close(fd)
+            }
+        }
+        let target = dir.appendingPathComponent("149")
+        for i in 0..<40 {
+            let sub = target.appendingPathComponent(String(format: "child%03d", i))
+            try fm.createDirectory(at: sub, withIntermediateDirectories: true)
+            for f in 0..<200 {
+                let fd = open(sub.appendingPathComponent("f\(f)").path, O_CREAT | O_WRONLY, 0o600)
+                guard fd >= 0 else { throw Scanner.ScanError.cannotOpen(sub.path, errno) }
+                close(fd)
+            }
+        }
+        let box = LiveScanBox()
+        let started = Date()
+        let task = Task { try await Scanner.scan(root: dir.path, options: ScanOptions(workers: 1, twoPhase: false), live: { box.set($0) }) }
+        var targetID: Int32?
+        var requestedAt = started
+        for _ in 0..<500 {
+            if let model = box.get(), let row = model.children(of: 0).first(where: { $0.name == "149" }) { targetID = row.id; requestedAt = Date(); model.prioritize(row.id); break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        var priorityDone: Date?
+        for _ in 0..<5000 {
+            if let targetID, let model = box.get() {
+                let children = model.children(of: targetID).filter(\.isDirectory)
+                if children.count == 40 && children.allSatisfy({ (model.completionOrder(of: $0.id) ?? 0) > 0 }) { priorityDone = Date(); break }
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        _ = try await task.value
+        let model = box.get()
+        let orders = targetID.flatMap { id in model?.children(of: id).filter(\.isDirectory).compactMap { model?.completionOrder(of: $0.id) } } ?? []
+        let targetOrder = targetID.flatMap { model?.completionOrder(of: $0) } ?? -1
+        print("subtree priority: \(orders.count) descendants, last order \(orders.max() ?? -1), target order \(targetOrder)")
+        verify("expanded subtree descendants stay behind unrelated folders", orders.count == 40 && (orders.max() ?? 1000) <= targetOrder + 40)
+        let controlBox = LiveScanBox()
+        let control = Task { try await Scanner.scan(root: dir.path, options: ScanOptions(workers: 1, twoPhase: false), live: { controlBox.set($0) }) }
+        var controlID: Int32?, controlRequested = Date()
+        for _ in 0..<500 {
+            if let model = controlBox.get(), let row = model.children(of: 0).first(where: { $0.name == "149" }) { controlID = row.id; controlRequested = Date(); break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        var controlDone: Date?
+        for _ in 0..<5000 {
+            if let controlID, let model = controlBox.get() {
+                let children = model.children(of: controlID).filter(\.isDirectory)
+                if children.count == 40 && children.allSatisfy({ (model.completionOrder(of: $0.id) ?? 0) > 0 }) { controlDone = Date(); break }
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        _ = try await control.value
+        if let priorityDone, let controlDone {
+            print(String(format: "subtree priority measured on 38,000 files: expanded %.3f s, ordinary queue %.3f s", priorityDone.timeIntervalSince(requestedAt), controlDone.timeIntervalSince(controlRequested)))
+        }
+        verify("subtree priority timing reaches completed descendants", priorityDone != nil && controlDone != nil)
+        let cancelBox = LiveScanBox()
+        let activeTask = Task { () -> Bool in
+            do {
+                _ = try await Scanner.scan(root: dir.path, options: ScanOptions(workers: 1, twoPhase: false, bufferSize: 4096), live: { cancelBox.set($0) })
+                return false
+            } catch DiskCore.Scanner.ScanError.cancelled { return true }
+            catch { return false }
+        }
+        var cancelledActiveWorker = false
+        for _ in 0..<1000 {
+            if let model = cancelBox.get(), model.completedDirectories > 2 && model.completedDirectories < 190 {
+                cancelledActiveWorker = true; activeTask.cancel(); break
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let didCancel = await activeTask.value
+        verify("active worker ignores cancellation", cancelledActiveWorker && didCancel)
+    } catch { verify("subtree priority setup: \(error)", false) }
+    do {
+        let dir = try folder("bug-vanished-live-pending")
+        for i in 0..<300 { try fm.createDirectory(at: dir.appendingPathComponent(String(format: "d%03d", i)), withIntermediateDirectories: true) }
+        let vanished = dir.appendingPathComponent("zz-vanished")
+        try fm.createDirectory(at: vanished, withIntermediateDirectories: true)
+        let box = LiveScanBox()
+        let task = Task { try await Scanner.scan(root: dir.path, options: ScanOptions(workers: 1, twoPhase: false, bufferSize: 4096), live: { box.set($0) }) }
+        var removed = false
+        for _ in 0..<500 {
+            if let model = box.get(), let row = model.children(of: 0).first(where: { $0.name == "zz-vanished" }), model.completionOrder(of: row.id) == 0 {
+                try fm.removeItem(at: vanished); removed = true; break
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        _ = try await task.value
+        let row = box.get()?.children(of: 0).first(where: { $0.name == "zz-vanished" })
+        verify("vanished live folder stays sizing or looks successful", removed && row?.isUnreadable == true && row?.isSizing == false && box.get()?.node(0)?.isSizing == false)
+    } catch { verify("vanished live folder setup: \(error)", false) }
     verify("Int32 name and node limits", Scanner.indexFits(Int(Int32.max)) && !Scanner.indexFits(Int(Int32.max), appending: 1) && !Scanner.indexFits(Int(Int32.max) + 1))
     do {
         let empty = try folder("extra-empty")
@@ -208,6 +357,27 @@ private final class LiveScanBox: @unchecked Sendable {
         var st = stat(); _ = lstat(first.path, &st)
         verify("hard linked clone counted once", tree.filesSeen == 3 && tree.countedSize[0] < Int64(st.st_blocks) * 512 * 2)
     } catch { verify("hard linked clone setup: \(error)", false) }
+    do {
+        let dir = try folder("bug-modified-clone-hardlink")
+        let original = dir.appendingPathComponent("a-original.bin")
+        let clone = dir.appendingPathComponent("z-clone.bin")
+        try put(original, 1_000_000)
+        let cp = Process(); cp.executableURL = URL(fileURLWithPath: "/bin/cp"); cp.arguments = ["-c", original.path, clone.path]
+        try cp.run(); cp.waitUntilExit()
+        guard cp.terminationStatus == 0 else { throw Scanner.ScanError.cannotOpen(clone.path, cp.terminationStatus) }
+        let fd = open(clone.path, O_WRONLY)
+        guard fd >= 0 else { throw Scanner.ScanError.cannotOpen(clone.path, errno) }
+        let changed = [UInt8](repeating: 9, count: 16_384)
+        let wrote = changed.withUnsafeBytes { pwrite(fd, $0.baseAddress!, $0.count, 0) }
+        close(fd)
+        guard wrote == changed.count, link(clone.path, dir.appendingPathComponent("zz-link.bin").path) == 0 else { throw Scanner.ScanError.cannotOpen(clone.path, errno) }
+        let single = try await scan(dir, twoPhase: false)
+        let phased = try await scan(dir)
+        var originalStat = stat(); _ = lstat(original.path, &originalStat)
+        let originalAllocated = Int64(originalStat.st_blocks) * 512
+        print("modified clone: original allocated \(originalAllocated) single \(single.countedSize[0]) phased \(phased.countedSize[0])")
+        verify("modified clone hard link loses private bytes in single pass", single.countedSize[0] == phased.countedSize[0] && single.privateSize[0] == phased.privateSize[0] && single.countedSize[0] > originalAllocated)
+    } catch { verify("modified clone hard link setup: \(error)", false) }
     do {
         let dir = try folder("extra-link-change")
         let first = dir.appendingPathComponent("first.bin")
