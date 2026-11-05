@@ -30,13 +30,29 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>MacDiskStats</string>
 <key>CFBundleExecutable</key><string>MacDiskStats</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
+<key>CFBundleShortVersionString</key><string>1.0.0</string>
+<key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
+<key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
+<key>NSHumanReadableCopyright</key><string>Copyright © 2026 Yi Li</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
 swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Sources/MacDiskStatsApp/*.swift "$out/libDiskCore.a" -framework AppKit -framework QuickLookUI -o "$app/Contents/MacOS/MacDiskStats"
+swiftc -swift-version 6 -target arm64-apple-macos15.0 -module-cache-path "$CLANG_MODULE_CACHE_PATH" "${opt[@]}" -I "$out" Tools/make-icon/*.swift "$out/libDiskCore.a" -framework AppKit -o "$out/make-icon"
+"$out/make-icon" "$out/AppIcon.iconset"
+if ! iconutil -c icns "$out/AppIcon.iconset" -o Resources/AppIcon.icns; then
+  echo 'iconutil could not pack AppIcon.icns here; run scripts/pack-icon.sh outside this sandbox' >&2
+fi
+if [[ -s Resources/AppIcon.icns ]]; then cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"; fi
 if [[ "$mode" == release ]]; then
-  codesign --force --sign "${MACDISKSTATS_SIGN_ID:--}" --entitlements Resources/MacDiskStats.entitlements "$app"
+  sign_id="${MDS_SIGN_ID:-${CUSHION_SIGN_ID:-}}"
+  if [[ -n "$sign_id" ]]; then
+    codesign --force --options runtime --timestamp --sign "$sign_id" --entitlements Resources/MacDiskStats.entitlements "$app"
+  else
+    codesign --force --sign - --entitlements Resources/MacDiskStats.entitlements "$app"
+  fi
 else
   codesign --force --sign - "$app"
 fi
