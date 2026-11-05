@@ -2,6 +2,13 @@ import Foundation
 import Darwin
 import DiskCore
 
+private final class LiveScanBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: LiveScan?
+    func set(_ scan: LiveScan) { lock.withLock { value = scan } }
+    func get() -> LiveScan? { lock.withLock { value } }
+}
+
 @MainActor func runExtendedChecks(base: URL) async -> (tests: Int, failures: Int) {
     let fm = FileManager.default
     var tests = 0, failures = 0
@@ -24,6 +31,45 @@ import DiskCore
     func child(_ tree: FileTree, _ name: String) -> Int32? {
         tree.children.first { tree.path(of: $0).split(separator: "/").last == Substring(name) }
     }
+    do {
+        let dir = try folder("extra-live")
+        let target = dir.appendingPathComponent("target", isDirectory: true)
+        try fm.createDirectory(at: target, withIntermediateDirectories: true)
+        try put(target.appendingPathComponent("one.txt"))
+        let seen = LiveScanBox()
+        let result = try await DiskCore.Scanner.scan(root: dir.path, options: ScanOptions(workers: 1), live: { model in
+            seen.set(model)
+        })
+        let model = seen.get()
+        let rootRows = model?.children(of: 0) ?? []
+        let targetRow = rootRows.first { $0.name == "target" }
+        verify("live root rows missing before final tree", targetRow != nil)
+        verify("live folder never becomes complete", targetRow.flatMap { model?.node($0.id) }?.isSizing == false)
+        verify("live IDs differ from final tree", targetRow.map { result.path(of: $0.id).hasSuffix("/target") } == true)
+    } catch { verify("live scan setup: \(error)", false) }
+    do {
+        let dir = try folder("extra-priority")
+        for i in 0..<500 {
+            let sub = dir.appendingPathComponent(String(format: "%04d", i), isDirectory: true)
+            try fm.createDirectory(at: sub, withIntermediateDirectories: true)
+        }
+        let box = LiveScanBox()
+        let scanTask = Task { try await DiskCore.Scanner.scan(root: dir.path, options: ScanOptions(workers: 1, twoPhase: false), live: { box.set($0) }) }
+        var target: Int32?, completedAtRequest = 0
+        for _ in 0..<500 {
+            if let model = box.get(), let row = model.children(of: 0).first(where: { $0.name == "0499" }) {
+                target = row.id; completedAtRequest = model.completedDirectories; model.prioritize(row.id); break
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        _ = try await scanTask.value
+        let row = target.flatMap { box.get()?.node($0) }
+        verify("priority target is known and finished", row != nil && row?.isSizing == false)
+        // One worker finishes the root before any child. Priority should finish the last child second.
+        let order = target.flatMap { box.get()?.completionOrder(of: $0) } ?? 0
+        print("priority target finished at directory \(order) of 501; \(completedAtRequest) were done when requested (without priority: about 501)")
+        verify("priority request leaves target at queue tail", order > 0 && order <= completedAtRequest + 2)
+    } catch { verify("priority scan setup: \(error)", false) }
     verify("Int32 name and node limits", Scanner.indexFits(Int(Int32.max)) && !Scanner.indexFits(Int(Int32.max), appending: 1) && !Scanner.indexFits(Int(Int32.max) + 1))
     do {
         let empty = try folder("extra-empty")

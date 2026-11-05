@@ -33,6 +33,7 @@ if (( fail == 0 )); then
   dd if=/dev/zero of="$fixture/large.txt" bs=4096 count=8 2>/dev/null
   dd if=/dev/zero of="$fixture/nested/other.png" bs=4096 count=4 2>/dev/null
   dd if=/dev/zero of="$fixture/delete-me.txt" bs=4096 count=1 2>/dev/null
+  mkdir -p "$fixture"/nested/dir{1..10000}
   build/MacDiskStats.app/Contents/MacOS/MacDiskStats --e2e fixture --scan "$fixture" > build/test-e2e.log 2>&1 &
   appPID=$!
   for ((i=0; i<200; i++)); do

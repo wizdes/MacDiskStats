@@ -13,6 +13,7 @@ import DiskCore
     static let inset: CGFloat = 10
     static let cellInset: CGFloat = 7
     static let swatchSize: CGFloat = 11
+    static let sizingSpinnerSize: CGFloat = 12
     static let mapFrameWidth: CGFloat = 2
     static let mapFrameInset: CGFloat = 1
     static let startSpacing: CGFloat = 14
@@ -47,6 +48,7 @@ import DiskCore
     static func background(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.12, alpha: 1) : .white }
     static func secondary(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.16, alpha: 1) : NSColor(calibratedWhite: 0.97, alpha: 1) }
     static func mapBackground(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.11, alpha: 1) : NSColor(calibratedWhite: 0.95, alpha: 1) }
+    static func liveFolder(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.31, alpha: 1) : NSColor(calibratedWhite: 0.77, alpha: 1) }
     static func text(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.91, alpha: 1) : NSColor(calibratedWhite: 0.12, alpha: 1) }
     static func muted(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.70, alpha: 1) : NSColor(calibratedWhite: 0.39, alpha: 1) }
     static func separator(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.28, alpha: 1) : NSColor(calibratedWhite: 0.88, alpha: 1) }

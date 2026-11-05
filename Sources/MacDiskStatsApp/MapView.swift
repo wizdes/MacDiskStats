@@ -11,6 +11,8 @@ import DiskCore
     var selectedNode: Int32? { didSet { updateFrame() } }
     private let imageLayer = CALayer()
     private let previewLayer = CALayer()
+    private var previewBoxes: [(CGRect, Int32)] = []
+    var hasPreview: Bool { !previewBoxes.isEmpty }
     private let frameLayer = CAShapeLayer()
     private var area: NSTrackingArea?
     var dark = false { didSet { layer?.backgroundColor = Tokens.mapBackground(dark).cgColor; updateFrame() } }
@@ -50,7 +52,33 @@ import DiskCore
                                   provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return }
         imageLayer.contents = image
         previewLayer.sublayers = nil
+        previewBoxes = []
         imageLayer.contentsScale = window?.backingScaleFactor ?? 1
+    }
+    func clearPreview() { previewLayer.sublayers = nil; previewBoxes = [] }
+    func showPreview(rows: [LiveNode]) {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let visible = Array(rows.filter { $0.bytes > 0 || $0.isDirectory }.prefix(48))
+        guard !visible.isEmpty else { return }
+        let sum = visible.reduce(Int64(0)) { $0 + max(1, $1.bytes) }
+        var x: CGFloat = 0
+        var boxes: [(CGRect, Int32)] = []
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        previewLayer.sublayers = visible.enumerated().map { index, item in
+            let block = CALayer()
+            let width = index == visible.count - 1 ? bounds.width - x : bounds.width * CGFloat(max(1, item.bytes)) / CGFloat(sum)
+            block.frame = CGRect(x: x, y: 0, width: max(0, width), height: bounds.height)
+            let colorIndex = item.extensionName.utf8.reduce(0) { ($0 &* 31 &+ Int($1)) % 12 }
+            block.backgroundColor = item.isDirectory ? Tokens.liveFolder(dark).cgColor : Tokens.color(for: colorIndex, dark: dark).cgColor
+            block.opacity = item.isSizing ? 0.72 : 1
+            block.borderColor = Tokens.mapBackground(dark).cgColor
+            block.borderWidth = Tokens.splitThickness
+            boxes.append((block.frame, item.id))
+            x += width
+            return block
+        }
+        previewBoxes = boxes
+        CATransaction.commit()
     }
     func showPreview(_ totals: [(path: String, bytes: Int64)], root: String) {
         let folders = totals.filter { item in
@@ -74,6 +102,7 @@ import DiskCore
         CATransaction.commit()
     }
     private func hit(_ point: NSPoint) -> Int32? {
+        if layoutData == nil { return previewBoxes.first { $0.0.contains(point) }?.1 }
         guard let layoutData, bounds.width > 0, bounds.height > 0 else { return nil }
         let x = Int(point.x / bounds.width * CGFloat(layoutData.width))
         let y = Int(point.y / bounds.height * CGFloat(layoutData.height))
