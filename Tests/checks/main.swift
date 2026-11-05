@@ -43,7 +43,7 @@ do {
         check("cp -c clone counted once", t.countedSize[0] >= allocated(a) && t.countedSize[0] < allocated(a) + allocated(b))
         check("cp -c clone private size", t.privateSize[0] < t.countedSize[0])
         check("cp -c clone shared flag", t.flags.contains(.cloneShared))
-    } else { print("SKIP clone: cp -c unavailable on test volume") }
+    } else { check("cp -c clone available on test volume", false) }
 } catch { failures += 1; print("FAIL clone setup: \(error)") }
 
 do {

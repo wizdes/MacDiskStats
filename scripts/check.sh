@@ -4,6 +4,7 @@ out=${MACDISKSTATS_BUILD_OUT:-build}
 start=$SECONDS
 scripts/build.sh debug --out "$out"
 "$out/checks" | tee "$out/check-output.txt"
+if rg -q '^SKIP ' "$out/check-output.txt"; then echo 'skipped check' >&2; exit 1; fi
 scripts/check-readonly.sh
 scripts/check-entitlements.sh
 tests=$(sed -n 's/^checks \([0-9][0-9]*\), failed 0$/\1/p' "$out/check-output.txt")

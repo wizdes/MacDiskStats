@@ -24,6 +24,7 @@ import DiskCore
     func child(_ tree: FileTree, _ name: String) -> Int32? {
         tree.children.first { tree.path(of: $0).split(separator: "/").last == Substring(name) }
     }
+    verify("Int32 name and node limits", Scanner.indexFits(Int(Int32.max)) && !Scanner.indexFits(Int(Int32.max), appending: 1) && !Scanner.indexFits(Int(Int32.max) + 1))
     do {
         let empty = try folder("extra-empty")
         let tree = try await scan(empty)
@@ -42,24 +43,20 @@ import DiskCore
     do {
         let dir = try folder("extra-names")
         for name in ["white space.txt", "emoji-😀.PNG", ".bashrc", "a.", "a.tar.gz", "NOEXT", ".hidden"] { try put(dir.appendingPathComponent(name)) }
-        let raw = dir.path.withCString { path -> Int32 in
-            let fd = open(path, O_RDONLY | O_DIRECTORY)
-            defer { if fd >= 0 { close(fd) } }
-            guard fd >= 0 else { return -1 }
-            let bytes: [CChar] = [105, 110, 118, 97, 108, 105, 100, -1, 0]
-            return bytes.withUnsafeBufferPointer { openat(fd, $0.baseAddress!, O_CREAT | O_WRONLY, 0o600) }
-        }
-        let rawError = errno
-        if raw >= 0 { close(raw) }
         let tree = try await scan(dir)
-        verify("spaces emoji and leading dots lost", tree.filesSeen == (raw >= 0 ? 8 : 7))
-        verify("invalid UTF8 bytes lost or fixture denied by OS errno \(rawError)", raw >= 0 && tree.names.contains(0xff))
-        let expected = [".bashrc": "bashrc", "a.": "", "a.tar.gz": "gz", "NOEXT": ""]
+        verify("spaces emoji and leading dots lost", tree.filesSeen == 7)
+        let expected = [".bashrc": "", "a.": "", "a.tar.gz": "gz", "NOEXT": ""]
         verify("extension suffix parsing is wrong", expected.allSatisfy { name, ext in
             guard let id = child(tree, name), tree.extensionIndex[Int(id)] >= 0 else { return false }
             return tree.extensions[Int(tree.extensionIndex[Int(id)])].name == ext
         })
         verify("uppercase extension does not fold to lowercase", tree.extensions.contains { $0.name == "png" })
+        verify("invalid UTF8 byte identity", FileTree.displayName(bytes: [0xff]) != FileTree.displayName(bytes: [0xfe]))
+        let rawPath = Array("/tmp/invalid-".utf8) + [0xff]
+        let recovered = FileTree.url(pathBytes: rawPath, isDirectory: false).withUnsafeFileSystemRepresentation { pointer in
+            pointer.map { Array(UnsafeBufferPointer(start: UnsafeRawPointer($0).assumingMemoryBound(to: UInt8.self), count: Int(strlen($0)))) }
+        }
+        verify("invalid UTF8 URL keeps file bytes", recovered == rawPath)
     } catch { verify("names setup: \(error)", false) }
     do {
         let dir = try folder("extra-many")
@@ -85,6 +82,22 @@ import DiskCore
         let tree = try await scan(root, twoPhase: false)
         verify("deep scan runs out of file descriptors or stack", made == 300 && tree.dirsSeen == 301 && tree.filesSeen == 1)
     } catch { verify("deep folder setup or scan: \(error)", false) }
+    do {
+        let root = try folder("extra-long-path")
+        var fd = open(root.path, O_RDONLY | O_DIRECTORY)
+        guard fd >= 0 else { throw DiskCore.Scanner.ScanError.cannotOpen(root.path, errno) }
+        for _ in 0..<530 {
+            guard mkdirat(fd, "d", 0o700) == 0 else { throw DiskCore.Scanner.ScanError.cannotOpen(root.path, errno) }
+            let next = openat(fd, "d", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+            close(fd); fd = next
+            guard fd >= 0 else { throw DiskCore.Scanner.ScanError.cannotOpen(root.path, errno) }
+        }
+        let leaf = openat(fd, "end", O_CREAT | O_WRONLY, 0o600)
+        guard leaf >= 0 else { throw DiskCore.Scanner.ScanError.cannotOpen(root.path, errno) }
+        close(leaf); close(fd)
+        let tree = try await scan(root)
+        verify("long directory path opens by component", tree.dirsSeen == 531 && tree.filesSeen == 1 && tree.unreadablePaths.isEmpty)
+    } catch { verify("long directory path setup or scan: \(error)", false) }
     do {
         let dir = try folder("extra-links")
         let one = dir.appendingPathComponent("one"), two = dir.appendingPathComponent("two")
@@ -121,7 +134,42 @@ import DiskCore
         let tree = try await scan(dir)
         var st = stat(); _ = lstat(first.path, &st)
         verify("clone chain charges every shared copy", tree.filesSeen == 4 && tree.countedSize[0] < Int64(st.st_blocks) * 512 * 4)
+        verify("phase two preserves leaf file type", tree.parent.indices.dropFirst().allSatisfy { tree.flags[$0].contains(.isDir) || tree.largestFileType[$0] == tree.extensionIndex[$0] })
     } catch { verify("clone chain setup: \(error)", false) }
+    do {
+        let dir = try folder("extra-clone-links")
+        let first = dir.appendingPathComponent("first.bin")
+        let clone = dir.appendingPathComponent("clone.bin")
+        let linked = dir.appendingPathComponent("linked.bin")
+        try put(first, 1_000_000)
+        let cp = Process(); cp.executableURL = URL(fileURLWithPath: "/bin/cp"); cp.arguments = ["-c", first.path, clone.path]
+        try cp.run(); cp.waitUntilExit()
+        guard cp.terminationStatus == 0, link(clone.path, linked.path) == 0 else { throw DiskCore.Scanner.ScanError.cannotOpen(dir.path, errno) }
+        let tree = try await scan(dir)
+        var st = stat(); _ = lstat(first.path, &st)
+        verify("hard linked clone counted once", tree.filesSeen == 3 && tree.countedSize[0] < Int64(st.st_blocks) * 512 * 2)
+    } catch { verify("hard linked clone setup: \(error)", false) }
+    do {
+        let dir = try folder("extra-link-change")
+        let first = dir.appendingPathComponent("first.bin")
+        let linked = dir.appendingPathComponent("linked.bin")
+        try put(first, 8192)
+        let tree = try await Scanner.scan(root: dir.path, options: ScanOptions(workers: 1), phase1: { _ in
+            _ = link(first.path, linked.path)
+        })
+        guard let firstID = child(tree, "first.bin") else { verify("new hard link keeps Frees at zero", false); throw DiskCore.Scanner.ScanError.storageLimit }
+        verify("new hard link keeps Frees at zero", tree.privateSize[Int(firstID)] == 0)
+    } catch { verify("new hard link setup: \(error)", false) }
+    do {
+        let dir = try folder("extra-replaced-file")
+        let first = dir.appendingPathComponent("first.bin")
+        try put(first, 8192)
+        let tree = try await Scanner.scan(root: dir.path, options: ScanOptions(workers: 1), phase1: { _ in
+            try? fm.removeItem(at: first)
+            try? put(first, 16384)
+        })
+        verify("replaced file identity is not reused", tree.limitations.contains { $0.contains("changed") } || child(tree, "first.bin").map { tree.flags[Int($0)].contains(.unreadable) } == true)
+    } catch { verify("replaced file setup: \(error)", false) }
     do {
         let dir = try folder("extra-map")
         let nested = dir.appendingPathComponent("nested")

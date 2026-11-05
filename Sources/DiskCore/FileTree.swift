@@ -10,6 +10,7 @@ public struct NodeFlags: OptionSet, Sendable {
     public static let mountPointStopped = Self(rawValue: 16)
     public static let symlink = Self(rawValue: 32)
     public static let hardlink = Self(rawValue: 64)
+    public static let firmlink = Self(rawValue: 128)
 }
 
 public struct ExtensionTotal: Sendable {
@@ -20,8 +21,15 @@ public struct ExtensionTotal: Sendable {
 
 // Parallel arrays keep node storage compact. IDs and child spans stay stable after scan().
 public struct FileTree: Sendable {
+    public static func displayName(bytes: [UInt8]) -> String {
+        if let valid = String(bytes: bytes, encoding: .utf8) { return valid }
+        return bytes.map { String(format: "%%%02X", $0) }.joined()
+    }
     public let rootPath: String
     public let parent: [Int32]
+    public let device: [UInt64]
+    public let inode: [UInt64]
+    public let linkCount: [UInt32]
     public let firstChild: [Int32]
     public let childCount: [Int32]
     public let countedSize: [Int64]
@@ -51,10 +59,31 @@ public struct FileTree: Sendable {
         while at > 0 {
             let n = Int(at)
             let a = Int(nameOffset[n]), b = a + Int(nameLength[n])
-            parts.append(String(decoding: names[a..<b], as: UTF8.self))
+            parts.append(Self.displayName(bytes: Array(names[a..<b])))
             at = parent[n]
         }
         return (rootPath == "/" ? "" : rootPath) + "/" + parts.reversed().joined(separator: "/")
+    }
+
+    public func pathBytes(of id: Int32) -> [UInt8] {
+        var result = Array(rootPath.utf8)
+        if id == 0 { return result }
+        var parts: [[UInt8]] = [], at = id
+        while at > 0 {
+            let i = Int(at), a = Int(nameOffset[i])
+            parts.append(Array(names[a..<(a + Int(nameLength[i]))]))
+            at = parent[i]
+        }
+        for part in parts.reversed() {
+            if result.last != 47 { result.append(47) }
+            result.append(contentsOf: part)
+        }
+        return result
+    }
+
+    public func url(of id: Int32) -> URL {
+        let bytes = pathBytes(of: id).map { CChar(bitPattern: $0) } + [0]
+        return bytes.withUnsafeBufferPointer { URL(fileURLWithFileSystemRepresentation: $0.baseAddress!, isDirectory: flags[Int(id)].contains(.isDir), relativeTo: nil) }
     }
 
     public func topFiles(limit: Int) -> [Int32] {

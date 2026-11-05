@@ -24,6 +24,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var mapTask: Task<Void, Never>?
     private var resizeTask: Task<Void, Never>?
     private var renderVersion = 0
+    private var scanVersion = 0
     private var renderedRoot: Int32 = -1
     private var selecting = false
     private var topWindow: NSWindow?
@@ -233,8 +234,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     private func startScan(_ path: String) {
-        scanTask?.cancel(); mapTask?.cancel()
-        tree = nil; checkingSharedFiles = false; rootPath = path; zoomNode = 0; selectedNode = nil; highlightedType = nil; bannerDismissed = false
+        scanTask?.cancel(); mapTask?.cancel(); renderVersion += 1; scanVersion += 1
+        let version = scanVersion
+        tree = nil; checkingSharedFiles = false; rootPath = path; zoomNode = 0; selectedNode = nil; hoveredNode = nil; highlightedType = nil; bannerDismissed = false
         let rootURL = URL(fileURLWithPath: path)
         do {
             let values = try rootURL.resourceValues(forKeys: [.volumeAvailableCapacityKey])
@@ -250,12 +252,12 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             guard let self else { return }
             do {
                 let result = try await Scanner.scan(root: path, progress: { [weak self] report in
-                    Task { @MainActor [weak self] in self?.showProgress(report) }
-                }, phase1: { [weak self] snapshot in self?.publishTree(snapshot, final: false) })
-                guard !Task.isCancelled else { return }
+                    Task { @MainActor [weak self] in if self?.scanVersion == version { self?.showProgress(report) } }
+                }, phase1: { [weak self] snapshot in if self?.scanVersion == version { self?.publishTree(snapshot, final: false) } })
+                guard !Task.isCancelled, version == self.scanVersion else { return }
                 self.publishTree(result, final: true)
             } catch {
-                if Task.isCancelled { return }
+                if Task.isCancelled || version != self.scanVersion { return }
                 self.isScanning = false
                 self.checkingSharedFiles = false
                 self.progress.stopAnimation(nil); self.progress.isHidden = true
@@ -311,7 +313,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
     @objc private func cancelScan() {
         guard isScanning else { return }
-        scanTask?.cancel(); isScanning = false; checkingSharedFiles = false
+        scanTask?.cancel(); scanVersion += 1; isScanning = false; checkingSharedFiles = false
         progress.stopAnimation(nil); progress.isHidden = true
         status.stringValue = "Scan cancelled. Choose a folder to scan again."
     }
@@ -344,7 +346,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
                 Treemap.shade(layout, into: &rgba, params: params, highlightExtension: highlight)
                 return (layout, rgba)
             }.value
-            guard let self, version == self.renderVersion else { return }
+            guard let self, !Task.isCancelled, version == self.renderVersion else { return }
             self.mapView.layoutData = rendered.0
             self.renderedRoot = root
             self.mapView.show(rendered.1, width: width, height: height)
@@ -523,7 +525,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private func updateStatus() {
         guard let tree, status != nil else { return }
         let suffix = checkingSharedFiles ? " · checking shared files…" : ""
-        if let id = hoveredNode ?? selectedNode {
+        if let id = hoveredNode ?? selectedNode, id >= 0, Int(id) < tree.parent.count {
             let size = tree.flags[Int(id)].contains(.unreadable) ? "unreadable" : format(tree.countedSize[Int(id)])
             status.stringValue = "\(tree.path(of: id)) · \(size)" + suffix
         } else {
@@ -533,19 +535,20 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             let gap = isVolumeRoot ? max(0, tree.volumeUsedBytes - tree.countedSize[0]) : 0
             let freeText = free < 0 ? "free unavailable" : "\(format(free)) free"
             if isVolumeRoot {
-                status.stringValue = "\(format(used)) used · \(freeText) · \(format(gap)) not counted · \(tree.unreadablePaths.count) folders unreadable" + suffix
+                status.stringValue = "\(format(used)) used · \(freeText) · \(format(gap)) not counted · \(tree.unreadablePaths.count) entries unreadable" + suffix
             } else {
                 let unreadable = tree.unreadablePaths.count
-                status.stringValue = "\(format(tree.countedSize[0])) in this folder · \(freeText) on disk" + (unreadable > 0 ? " · \(unreadable) folders unreadable" : "") + suffix
+                status.stringValue = "\(format(tree.countedSize[0])) in this folder · \(freeText) on disk" + (unreadable > 0 ? " · \(unreadable) entries unreadable" : "") + suffix
             }
         }
+        if !tree.limitations.isEmpty { status.stringValue += " · " + tree.limitations.joined(separator: "; ") }
     }
     private func updateBanner() {
         banner?.removeFromSuperview(); banner = nil
         guard let tree, !tree.unreadablePaths.isEmpty, !bannerDismissed, let host = scanView else { return }
         let row = NSView(frame: NSRect(x: 0, y: Tokens.statusHeight, width: host.bounds.width, height: Tokens.bannerHeight))
         row.autoresizingMask = [.width, .maxYMargin]; row.wantsLayer = true; row.layer?.backgroundColor = Tokens.secondary(dark).cgColor
-        let text = label("Some folders could not be read. The map leaves out their contents.", font: Tokens.statusFont, color: Tokens.text(dark))
+        let text = label("Some entries could not be read. The map leaves out their contents.", font: Tokens.statusFont, color: Tokens.text(dark))
         text.frame = NSRect(x: Tokens.inset, y: 0, width: row.bounds.width * Tokens.bannerTextFraction, height: Tokens.bannerHeight)
         text.autoresizingMask = [.width]; row.addSubview(text)
         let settings = NSButton(title: "Full Disk Access", target: self, action: #selector(openFullDiskAccess))
@@ -593,11 +596,12 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
     @objc private func reveal() {
         guard let tree, let selectedNode else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: tree.path(of: selectedNode))])
+        NSWorkspace.shared.activateFileViewerSelecting([tree.url(of: selectedNode)])
     }
     @objc private func copyPath() {
         guard let tree, let selectedNode else { return }
         NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([tree.url(of: selectedNode) as NSURL])
         NSPasteboard.general.setString(tree.path(of: selectedNode), forType: .string)
     }
     @objc private func quickLook() {
@@ -607,7 +611,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { selectedNode == nil ? 0 : 1 }
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
         guard let tree, let selectedNode else { return nil }
-        return URL(fileURLWithPath: tree.path(of: selectedNode)) as NSURL
+        return tree.url(of: selectedNode) as NSURL
     }
     @objc private func showLargest() {
         guard let tree else { return }
