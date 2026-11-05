@@ -66,24 +66,31 @@ public struct FileTree: Sendable {
     }
 
     public func pathBytes(of id: Int32) -> [UInt8] {
-        var result = Array(rootPath.utf8)
-        if id == 0 { return result }
         var parts: [[UInt8]] = [], at = id
         while at > 0 {
             let i = Int(at), a = Int(nameOffset[i])
             parts.append(Array(names[a..<(a + Int(nameLength[i]))]))
             at = parent[i]
         }
-        for part in parts.reversed() {
+        return Self.pathBytes(root: rootPath, components: parts.reversed())
+    }
+
+    public static func pathBytes(root: String, components: [[UInt8]]) -> [UInt8] {
+        var result = Array(root.utf8)
+        for part in components {
             if result.last != 47 { result.append(47) }
             result.append(contentsOf: part)
         }
         return result
     }
 
+    public static func url(pathBytes: [UInt8], isDirectory: Bool) -> URL {
+        let bytes = pathBytes.map { CChar(bitPattern: $0) } + [0]
+        return bytes.withUnsafeBufferPointer { URL(fileURLWithFileSystemRepresentation: $0.baseAddress!, isDirectory: isDirectory, relativeTo: nil) }
+    }
+
     public func url(of id: Int32) -> URL {
-        let bytes = pathBytes(of: id).map { CChar(bitPattern: $0) } + [0]
-        return bytes.withUnsafeBufferPointer { URL(fileURLWithFileSystemRepresentation: $0.baseAddress!, isDirectory: flags[Int(id)].contains(.isDir), relativeTo: nil) }
+        Self.url(pathBytes: pathBytes(of: id), isDirectory: flags[Int(id)].contains(.isDir))
     }
 
     public func topFiles(limit: Int) -> [Int32] {

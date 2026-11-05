@@ -106,4 +106,6 @@ import DiskCore
         frameLayer.shadowOpacity = 1
         frameLayer.shadowRadius = Tokens.mapFrameWidth
     }
+
+    func selectionFrameBounds() -> CGRect? { frameLayer.path?.boundingBox }
 }

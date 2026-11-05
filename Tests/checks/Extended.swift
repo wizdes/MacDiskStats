@@ -53,10 +53,8 @@ import DiskCore
         verify("uppercase extension does not fold to lowercase", tree.extensions.contains { $0.name == "png" })
         verify("invalid UTF8 byte identity", FileTree.displayName(bytes: [0xff]) != FileTree.displayName(bytes: [0xfe]))
         let rawPath = Array("/tmp/invalid-".utf8) + [0xff]
-        let recovered = FileTree.url(pathBytes: rawPath, isDirectory: false).withUnsafeFileSystemRepresentation { pointer in
-            pointer.map { Array(UnsafeBufferPointer(start: UnsafeRawPointer($0).assumingMemoryBound(to: UInt8.self), count: Int(strlen($0)))) }
-        }
-        verify("invalid UTF8 URL keeps file bytes", recovered == rawPath)
+        let recovered = FileTree.pathBytes(root: "/tmp", components: [Array("invalid-".utf8) + [0xff]])
+        verify("invalid UTF8 path keeps file bytes", recovered == rawPath)
     } catch { verify("names setup: \(error)", false) }
     do {
         let dir = try folder("extra-many")
@@ -117,6 +115,16 @@ import DiskCore
         verify("symlink loop followed", tree.dirsSeen == 3 && tree.flags.contains(.symlink))
         verify("sparse logical size treated as allocated", tree.logicalSize[0] > tree.countedSize[0] + 60_000_000)
     } catch { verify("links and sparse setup: \(error)", false) }
+    do {
+        let volumes = URL(fileURLWithPath: "/Volumes", isDirectory: true)
+        if fm.fileExists(atPath: "/Volumes/Recovery") {
+            let tree = try await scan(volumes, twoPhase: false)
+            let stopped = child(tree, "Recovery")
+            verify("mounted volume path is stopped", stopped.map { tree.flags[Int($0)].contains(.mountPointStopped) && tree.childCount[Int($0)] == 0 } == true)
+        } else {
+            verify("mounted volume path is stopped", false)
+        }
+    } catch { verify("mounted volume path setup: \(error)", false) }
     do {
         let dir = try folder("extra-clone-chain")
         let first = dir.appendingPathComponent("first.bin")

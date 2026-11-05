@@ -34,7 +34,7 @@ private struct Entry {
     var cloneID: UInt64 = 0
     var cloneRefs: UInt32 = 0
 }
-private struct Job { let id: Int32; let path: String }
+private struct Job { let id: Int32; let path: String; let key: Key; let firmlink: Bool }
 private final class State: @unchecked Sendable {
     let lock = NSCondition()
     var queue: [Job] = []
@@ -84,7 +84,8 @@ private final class State: @unchecked Sendable {
         self.device = [device]; self.inode = [inode]
         rootPath = path; rootFD = fd; rootDevice = device; self.dataDevice = dataDevice; self.volumeUsed = volumeUsed; self.options = options; self.progress = progress
         if !options.includePrivateSize { limitations.insert("private and clone attributes disabled; shared clone bytes may be counted twice") }
-        seenDirs.insert(Key(device: device, inode: inode)); openedDirs.insert(Key(device: device, inode: inode)); queue = [Job(id: 0, path: ".")]
+        let rootKey = Key(device: device, inode: inode)
+        seenDirs.insert(rootKey); openedDirs.insert(rootKey); queue = [Job(id: 0, path: ".", key: rootKey, firmlink: false)]
     }
     deinit { close(rootFD) }
     private func internExtension(_ name: UnsafeRawBufferPointer) -> Int32 {
@@ -166,13 +167,13 @@ private final class State: @unchecked Sendable {
         if isDir {
             dirsSeen += 1
             let sameVolume = e.device == rootDevice || (rootPath == "/" && e.device == dataDevice)
-            let firmlink = rootPath == "/" && sameVolume && ((e.commonFlags & UInt32(SF_FIRMLINK)) != 0 || (p == 0 && ["Users", "Applications", "Library", "private", "Volumes"].contains(path)))
+            let firmlink = rootPath == "/" && sameVolume && (e.commonFlags & UInt32(SF_FIRMLINK)) != 0
             if firmlink { flags[Int(id)].insert(.firmlink) }
             if forceUnreadable || e.error != 0 { flags[Int(id)].insert(.unreadable); unreadable.append(id) }
             else if path == "System/Volumes/Data" && rootPath == "/" { flags[Int(id)].insert(.mountPointStopped) }
             else if (e.mount != 0 || !sameVolume) && !firmlink { flags[Int(id)].insert(.mountPointStopped) }
             else if !seenDirs.insert(key).inserted { flags[Int(id)].insert(.mountPointStopped) }
-            else { queue.append(Job(id: id, path: path)); lock.broadcast() }
+            else { queue.append(Job(id: id, path: path, key: key, firmlink: firmlink)); lock.broadcast() }
         } else { filesSeen += 1; if f.contains(.unreadable) { unreadable.append(id) } }
         progressTick += 1
         if progressTick & 4095 == 0, Date().timeIntervalSince(lastProgress) >= 0.25 {
@@ -308,12 +309,16 @@ private func openDirectory(rootFD: Int32, components: [DirectoryPart], allowedDe
 }
 
 private func scanDirectory(_ job: Job, _ s: State, _ buffer: inout [UInt8]) {
-    let fd = openDirectory(rootFD: s.rootFD, components: s.directoryComponents(job.id), allowedDevices: [s.rootDevice, s.dataDevice])
+    var fd = openat(s.rootFD, job.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    if fd < 0 && errno == ENAMETOOLONG {
+        fd = openDirectory(rootFD: s.rootFD, components: s.directoryComponents(job.id), allowedDevices: [s.rootDevice, s.dataDevice])
+    }
     if fd < 0 { if errno == EXDEV { s.markMountStop(job.id) } else { s.markUnreadable(job.id) }; return }
     defer { close(fd) }
     var st = stat(); if fstat(fd, &st) != 0 { s.markUnreadable(job.id); return }
     // The opened directory, rather than its parent's entry, determines volume identity.
-    if UInt64(st.st_dev) != s.rootDevice && UInt64(st.st_dev) != s.dataDevice && job.id != 0 { return }
+    if UInt64(st.st_dev) != s.rootDevice && UInt64(st.st_dev) != s.dataDevice && job.id != 0 { s.markMountStop(job.id); return }
+    if job.id != 0 && !job.firmlink && (job.key.device != UInt64(st.st_dev) || job.key.inode != st.st_ino) { s.markUnreadable(job.id); return }
     if !s.enterOpened(job.id, key: Key(device: UInt64(st.st_dev), inode: st.st_ino)) { return }
     var attrs = attrlist()
     attrs.bitmapcount = UInt16(ATTR_BIT_MAP_COUNT)
@@ -345,8 +350,8 @@ private func parseRecords(_ bytes: [UInt8], count: Int, parent: Job, state s: St
     bytes.withUnsafeBytes { raw in
         guard let base = raw.baseAddress else { return }
         var pos = 0
-        for _ in 0..<count {
-            if s.isCancelled() { return }
+        for recordIndex in 0..<count {
+            if recordIndex & 255 == 0 && s.isCancelled() { return }
             if pos > raw.count - 4 { s.limit("malformed bulk attribute record"); s.markUnreadable(parent.id); return }
             let length = Int(base.loadUnaligned(fromByteOffset: pos, as: UInt32.self))
             if length < 24 || length > raw.count - pos { s.limit("malformed bulk attribute record"); s.markUnreadable(parent.id); return }
@@ -497,23 +502,26 @@ private final class Enrichment: @unchecked Sendable {
     }
     func update(_ id: Int32, device: UInt64, inode: UInt64, linkCount: UInt32, allocated: Int64, privateBytes: Int64, cloneID: UInt64, refs: UInt32) {
         let i = Int(id)
-        guard !tree.flags[i].contains(.isDir) else { return }
+        let oldFlags = tree.flags[i]
+        guard !oldFlags.contains(.isDir) else { return }
         guard device == tree.device[i], inode == tree.inode[i] else { skip(id); return }
         var size = max(0, allocated)
         var privateSize = max(0, privateBytes)
         var shared = false
-        let hardlink = linkCount > 1 && !tree.flags[i].contains(.symlink)
+        let hardlink = linkCount > 1 && !oldFlags.contains(.symlink)
         let duplicateLink = hardlink && !links.insert(Key(device: device, inode: inode))
-        if !tree.flags[i].contains(.symlink) && refs > 1 && cloneID != 0 && !duplicateLink {
+        if !oldFlags.contains(.symlink) && refs > 1 && cloneID != 0 && !duplicateLink {
             if !clones.insert(Key(device: device, inode: cloneID)) { size = privateSize; shared = true }
         }
         if hardlink { privateSize = 0 }
         if duplicateLink { size = 0 }
         lock.lock()
         counted[i] = size; priv[i] = privateSize
-        flags[i].subtract([.hardlink, .hardlinkDup, .cloneShared])
-        if hardlink { flags[i].insert(duplicateLink ? .hardlinkDup : .hardlink) }
-        if shared { flags[i].insert(.cloneShared) }
+        let sharedMask = NodeFlags.hardlink.rawValue | NodeFlags.hardlinkDup.rawValue | NodeFlags.cloneShared.rawValue
+        var newFlags = flags[i].rawValue & ~sharedMask
+        if hardlink { newFlags |= duplicateLink ? NodeFlags.hardlinkDup.rawValue : NodeFlags.hardlink.rawValue }
+        if shared { newFlags |= NodeFlags.cloneShared.rawValue }
+        flags[i] = NodeFlags(rawValue: newFlags)
         lock.unlock()
     }
     func skip(_ id: Int32) {
@@ -554,18 +562,25 @@ private func enrich(_ tree: FileTree, options: ScanOptions) async throws -> File
 
 private func enrichDirectory(_ id: Int32, _ s: Enrichment, _ buffer: inout [UInt8]) {
     let t = s.tree
-    var components: [DirectoryPart] = []
-    var at = id
-    while at > 0 {
-        let i = Int(at), a = Int(t.nameOffset[i])
-        components.append(DirectoryPart(bytes: Array(t.names[a..<(a + Int(t.nameLength[i]))]), key: Key(device: t.device[i], inode: t.inode[i]), firmlink: t.flags[i].contains(.firmlink)))
-        at = t.parent[i]
+    let fullPath = t.pathBytes(of: id)
+    let rootLength = t.rootPath.utf8.count
+    let relative = id == 0 ? [UInt8]([46]) : Array(fullPath.dropFirst(rootLength + (t.rootPath == "/" ? 0 : 1)))
+    let path = relative.map { CChar(bitPattern: $0) } + [0]
+    var fd = path.withUnsafeBufferPointer { openat(s.fd, $0.baseAddress!, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+    if fd < 0 && errno == ENAMETOOLONG {
+        var components: [DirectoryPart] = []
+        var at = id
+        while at > 0 {
+            let i = Int(at), a = Int(t.nameOffset[i])
+            components.append(DirectoryPart(bytes: Array(t.names[a..<(a + Int(t.nameLength[i]))]), key: Key(device: t.device[i], inode: t.inode[i]), firmlink: t.flags[i].contains(.firmlink)))
+            at = t.parent[i]
+        }
+        fd = openDirectory(rootFD: s.fd, components: Array(components.reversed()), allowedDevices: s.allowedDevices)
     }
-    let fd = openDirectory(rootFD: s.fd, components: Array(components.reversed()), allowedDevices: s.allowedDevices)
     guard fd >= 0 else { s.fail(); return }
     defer { close(fd) }
     var directoryStat = stat()
-    guard fstat(fd, &directoryStat) == 0,
+    guard fstat(fd, &directoryStat) == 0, s.allowedDevices.contains(UInt64(directoryStat.st_dev)),
           (t.flags[Int(id)].contains(.firmlink) || UInt64(directoryStat.st_dev) == t.device[Int(id)] && directoryStat.st_ino == t.inode[Int(id)]) else { s.fail(); return }
     let start = Int(t.firstChild[Int(id)]), end = start + Int(t.childCount[Int(id)])
     var byName: [Data: Int32] = [:]
@@ -590,8 +605,8 @@ private func enrichDirectory(_ id: Int32, _ s: Enrichment, _ buffer: inout [UInt
         let valid = buffer.withUnsafeBytes { raw -> Bool in
             guard let base = raw.baseAddress else { return false }
             var pos = 0
-            for _ in 0..<n {
-                if s.isCancelled() { return false }
+            for recordIndex in 0..<n {
+                if recordIndex & 255 == 0 && s.isCancelled() { return false }
                 guard pos <= raw.count - 4 else { return false }
                 let length = Int(base.loadUnaligned(fromByteOffset: pos, as: UInt32.self))
                 guard length >= 24 && length <= raw.count - pos else { return false }

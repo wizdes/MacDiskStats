@@ -21,6 +21,8 @@ record 'debug swiftc build' $?
 if (( fail == 0 )); then
   build/checks > build/test-unit.log 2>&1
   cat build/test-unit.log
+  if [[ -n $(find "$TMPDIR" -maxdepth 1 -name 'macdiskstats-checks-*' -print -quit) ]]; then record 'unit fixtures cleaned after checks' 1
+  else record 'unit fixtures cleaned after checks' 0; fi
   unitPass=$(rg -c '^PASS ' build/test-unit.log || true)
   unitFail=$(rg -c '^FAIL ' build/test-unit.log || true)
   (( pass += ${unitPass:-0}, fail += ${unitFail:-0} ))

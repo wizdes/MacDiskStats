@@ -34,6 +34,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var checkingSharedFiles = false
     private var bannerDismissed = false
     private var pendingSelect: String?
+    private var revealFiles: ([URL]) -> Void = { NSWorkspace.shared.activateFileViewerSelecting($0) }
     private var snapshotPath: String?
     private var snapshotAppearance: String?
     private var volumeFreeBytes: Int64 = 0
@@ -596,7 +597,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
     @objc private func reveal() {
         guard let tree, let selectedNode else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([tree.url(of: selectedNode)])
+        revealFiles([tree.url(of: selectedNode)])
     }
     @objc private func copyPath() {
         guard let tree, let selectedNode else { return }
@@ -665,6 +666,12 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         check("map hit selects tree row and type", selectedNode == file && outline.selectedRow >= 0 && types.selectedRow == Int(tree.extensionIndex[Int(file)]))
         selectNode(file, fromMap: true)
         check("row selection frames map box", mapView.selectedNode == file && layout.rect(of: file) != nil)
+        if let frame = mapView.selectionFrameBounds() {
+            let visualY = mapView.layer?.isGeometryFlipped == true ? frame.midY : mapView.bounds.height - frame.midY
+            let hitY = Int(visualY / mapView.bounds.height * CGFloat(layout.height))
+            let hitX = Int(frame.midX / mapView.bounds.width * CGFloat(layout.width))
+            check("selection frame matches hit at real backing scale", layout.width == Int((mapView.bounds.width * window.backingScaleFactor).rounded()) && layout.hitTest(x: hitX, y: hitY) == file)
+        } else { check("selection frame matches hit at real backing scale", false) }
         let beforeArrow = outline.selectedRow
         let nextArrow = min(beforeArrow + 1, outline.numberOfRows - 1)
         outline.selectRowIndexes(IndexSet(integer: nextArrow), byExtendingSelection: false)
@@ -691,6 +698,10 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             check("Top 100 row selects main window", selectedNode == topIDs[0])
         }
         selectNode(file, fromMap: true)
+        var revealed: [URL] = []
+        revealFiles = { revealed = $0 }
+        reveal()
+        check("Reveal in Finder sends selected URL", revealed == [tree.url(of: file)])
         copyPath()
         check("Copy Path writes exact path", NSPasteboard.general.string(forType: .string) == tree.path(of: file))
         let item = previewPanel(QLPreviewPanel.shared(), previewItemAt: 0) as? NSURL

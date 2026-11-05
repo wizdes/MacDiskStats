@@ -174,4 +174,10 @@ let extended = await runExtendedChecks(base: base)
 checks += extended.tests
 failures += extended.failures
 print("checks \(checks), failed \(failures)")
+let cleanup = Process()
+cleanup.executableURL = URL(fileURLWithPath: "/bin/rm")
+cleanup.arguments = ["-r", base.path]
+try cleanup.run()
+cleanup.waitUntilExit()
+if cleanup.terminationStatus != 0 { print("FAIL fixture cleanup"); exit(1) }
 exit(failures == 0 ? 0 : 1)
