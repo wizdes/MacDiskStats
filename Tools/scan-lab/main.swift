@@ -78,6 +78,9 @@ final class Walk: @unchecked Sendable {
     var paths = [String]()
     var next = 0, active = 0
     var entries: Int64 = 0, bytes: Int64 = 0, dirs: Int64 = 0, errors: Int64 = 0
+    var flaggedFiles: Int64 = 0, flaggedDirs: Int64 = 0, clearMismatchFiles: Int64 = 0, clearMismatchBytes: Int64 = 0
+    var uncompressedMismatchFiles: Int64 = 0, uncompressedMismatchBytes: Int64 = 0
+    var mismatches: [String] = []
     let root: String, device: dev_t, attrsKind: String, bufferSize: Int
     init(_ root: String, _ kind: String, _ size: Int) {
         self.root = root; attrsKind = kind; bufferSize = size; paths = [root]
@@ -89,8 +92,11 @@ final class Walk: @unchecked Sendable {
         if next == paths.count { return nil }
         let p = paths[next]; next += 1; active += 1; return p
     }
-    func done(_ names: [String], _ n: Int64, _ b: Int64, _ e: Int64) {
+    func done(_ names: [String], _ n: Int64, _ b: Int64, _ e: Int64, _ ff: Int64 = 0, _ fd: Int64 = 0, _ mf: Int64 = 0, _ mb: Int64 = 0, _ uf: Int64 = 0, _ ub: Int64 = 0, _ examples: [String] = []) {
         lock.lock(); paths.append(contentsOf: names); dirs += Int64(names.count); entries += n; bytes += b; errors += e; active -= 1; lock.broadcast(); lock.unlock()
+        flaggedFiles += ff; flaggedDirs += fd; clearMismatchFiles += mf; clearMismatchBytes += mb
+        uncompressedMismatchFiles += uf; uncompressedMismatchBytes += ub
+        if mismatches.count < 20 { mismatches.append(contentsOf: examples.prefix(20 - mismatches.count)) }
     }
 }
 func walk(_ root: String, _ kind: String, _ workers: Int, _ size: Int, _ repeatIndex: Int) {
@@ -102,6 +108,9 @@ func walk(_ root: String, _ kind: String, _ workers: Int, _ size: Int, _ repeatI
             var buffer = [UInt8](repeating: 0, count: size)
             while let path = w.pop() {
                 var child = [String](), n: Int64 = 0, bytes: Int64 = 0, errors: Int64 = 0
+                var flaggedFiles: Int64 = 0, flaggedDirs: Int64 = 0, mismatchFiles: Int64 = 0, mismatchBytes: Int64 = 0
+                var otherMismatchFiles: Int64 = 0, otherMismatchBytes: Int64 = 0
+                var examples: [String] = []
                 let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
                 if fd < 0 { w.done([],0,0,1); continue }
                 var attrs = attrlist(); attrs.bitmapcount = UInt16(ATTR_BIT_MAP_COUNT)
@@ -121,6 +130,8 @@ func walk(_ root: String, _ kind: String, _ workers: Int, _ size: Int, _ repeatI
                 if kind == "cloneid" { attrs.forkattr = UInt32(ATTR_CMNEXT_CLONEID) }
                 if kind == "clonerefs" { attrs.forkattr = UInt32(ATTR_CMNEXT_CLONE_REFCNT) }
                 if kind == "cloneidrefs" { attrs.forkattr = UInt32(ATTR_CMNEXT_CLONEID | ATTR_CMNEXT_CLONE_REFCNT) }
+                if kind == "extflags" || kind == "audit" { attrs.forkattr = UInt32(ATTR_CMNEXT_EXT_FLAGS) }
+                if kind == "audit" { attrs.forkattr |= UInt32(ATTR_CMNEXT_PRIVATESIZE) }
                 let opts: UInt64 = attrs.forkattr != 0 ? UInt64(FSOPT_PACK_INVAL_ATTRS | FSOPT_ATTR_CMN_EXTENDED) : UInt64(FSOPT_PACK_INVAL_ATTRS)
                 while true {
                     let count = buffer.withUnsafeMutableBytes { getattrlistbulk(fd, &attrs, $0.baseAddress, $0.count, opts) }
@@ -147,24 +158,47 @@ func walk(_ root: String, _ kind: String, _ workers: Int, _ size: Int, _ repeatI
                             if common & UInt32(ATTR_CMN_DEVID) != 0 { dev = base.loadUnaligned(fromByteOffset: cursor, as: UInt32.self); cursor += 4 }
                             if common & UInt32(ATTR_CMN_OBJTYPE) != 0 { type = base.loadUnaligned(fromByteOffset: cursor, as: UInt32.self); cursor += 4 }
                             if common & UInt32(ATTR_CMN_MODTIME) != 0 { cursor += MemoryLayout<timespec>.size }
-                            if common & UInt32(ATTR_CMN_FLAGS) != 0 { cursor += 4 }
+                            var commonFlags: UInt32 = 0
+                            if common & UInt32(ATTR_CMN_FLAGS) != 0 { commonFlags = base.loadUnaligned(fromByteOffset: cursor, as: UInt32.self); cursor += 4 }
                             if common & UInt32(ATTR_CMN_FILEID) != 0 { cursor += 8 }
                             if returned.dirattr & UInt32(ATTR_DIR_MOUNTSTATUS) != 0 { cursor += 4 }
                             if returned.fileattr & UInt32(ATTR_FILE_LINKCOUNT) != 0 { cursor += 4 }
                             if returned.fileattr & UInt32(ATTR_FILE_TOTALSIZE) != 0 { cursor += 8 }
-                            if returned.fileattr & UInt32(ATTR_FILE_ALLOCSIZE) != 0 { bytes += Int64(bitPattern: base.loadUnaligned(fromByteOffset: cursor, as: UInt64.self)); cursor += 8 }
+                            var allocated: Int64 = 0
+                            if returned.fileattr & UInt32(ATTR_FILE_ALLOCSIZE) != 0 { allocated = Int64(bitPattern: base.loadUnaligned(fromByteOffset: cursor, as: UInt64.self)); bytes += allocated; cursor += 8 }
+                            let ext = returned.forkattr
+                            var privateBytes: Int64 = allocated
+                            if ext & UInt32(ATTR_CMNEXT_PRIVATESIZE) != 0 {
+                                privateBytes = Int64(bitPattern: base.loadUnaligned(fromByteOffset: cursor, as: UInt64.self)); cursor += 8
+                            }
+                            var flags: UInt32 = 0
+                            if ext & UInt32(ATTR_CMNEXT_EXT_FLAGS) != 0 { flags = base.loadUnaligned(fromByteOffset: cursor, as: UInt32.self); cursor += 4 }
+                            if flags & UInt32(EF_MAY_SHARE_BLOCKS) != 0 {
+                                if type == UInt32(VDIR.rawValue) { flaggedDirs += 1 } else { flaggedFiles += 1 }
+                            }
+                            if ext & UInt32(ATTR_CMNEXT_PRIVATESIZE) != 0 && type != UInt32(VDIR.rawValue) && flags & UInt32(EF_MAY_SHARE_BLOCKS) == 0 && privateBytes != allocated {
+                                mismatchFiles += 1; mismatchBytes += abs(privateBytes - allocated)
+                                if commonFlags & UInt32(UF_COMPRESSED) == 0 {
+                                    otherMismatchFiles += 1; otherMismatchBytes += abs(privateBytes - allocated)
+                                    if examples.count < 20 { examples.append("uncompressed \(path)/\(name) allocated=\(allocated) private=\(privateBytes) delta=\(privateBytes-allocated)") }
+                                }
+                            }
+                            if kind == "audit" && root.contains("scan-fixtures") && type != UInt32(VDIR.rawValue) {
+                                examples.append("\(path)/\(name) flag=\(flags) allocated=\(allocated) private=\(privateBytes) delta=\(privateBytes-allocated)")
+                            }
                             if type == UInt32(VDIR.rawValue) && dev == UInt32(w.device) && name != "." && name != ".." && !(root == "/" && path == "/System/Volumes/Data") { child.append(path == "/" ? "/" + name : path + "/" + name) }
                             n += 1; pos += length
                         }
                     }
                 }
-                close(fd); w.done(child,n,bytes,errors)
+                close(fd); w.done(child,n,bytes,errors,flaggedFiles,flaggedDirs,mismatchFiles,mismatchBytes,otherMismatchFiles,otherMismatchBytes,examples)
             }
             group.leave()
         }
     }
     group.wait(); let after = cpu()
     print("bulk root=\(root) kind=\(kind) workers=\(workers) buffer=\(size) repeat=\(repeatIndex) entries=\(w.entries) dirs=\(w.dirs) bytes=\(w.bytes) errors=\(w.errors) wall=\(String(format:"%.3f",CFAbsoluteTimeGetCurrent()-start)) user=\(String(format:"%.3f",after.0-before.0)) sys=\(String(format:"%.3f",after.1-before.1))")
+    if kind == "extflags" || kind == "audit" { print("flags files=\(w.flaggedFiles) dirs=\(w.flaggedDirs) clearMismatchFiles=\(w.clearMismatchFiles) clearMismatchBytes=\(w.clearMismatchBytes) uncompressedMismatchFiles=\(w.uncompressedMismatchFiles) uncompressedMismatchBytes=\(w.uncompressedMismatchBytes)"); for line in w.mismatches { print("mismatch \(line)") } }
 }
 let args = CommandLine.arguments
 if args.count < 2 { print("usage: scan-lab search|bulk root [kind workers buffer repeats]"); exit(2) }

@@ -26,3 +26,13 @@ Commands: `scripts/check.sh` builds and runs 15 small checks and the source read
 | `searchfs` | `/` and Data | 2.7 s and 38.4 s | one thread; sums 414 GB on Data, so it sees clones as full size |
 
 The limit is kernel time, not our code. Skipping clone and private rules changes the total by 4.9%. `Tools/scan-lab` reruns these. Reading the raw APFS device needs root and is out of scope.
+
+## Extended-flag shortcut test (2026-11-04)
+
+The SDK calls the bit `EF_MAY_SHARE_BLOCKS` (`sys/stat.h`) and the bulk field `ATTR_CMNEXT_EXT_FLAGS` (`sys/attr.h`). The field was cheap: `scan-lab bulk / ordinary 16 131072 1` took 23.803 s; `extflags` took 24.560 s. On `/Applications`, ordinary took 1.052 s and `extflags` took 0.748 s, with warm-cache order affecting that small sample. The root walk found 319,701 flagged files and zero flagged directories. The lab walk visits some paths the scanner stops at, so these counts are not scanner node counts.
+
+The flag alone is not a valid private-size shortcut. On `/Applications`, 20,149 files with the flag clear had private bytes different from allocated bytes, with 2,762,952,704 bytes of absolute difference. All had `UF_COMPRESSED`. In the home-folder walk, 981 files differed by 6,017,024 bytes; two uncompressed `Icon\r` resource-fork files accounted for 212,992 bytes. On `/`, 323,047 clear-flag files differed by 18,992,893,952 bytes; 150,024 lacked `UF_COMPRESSED` and differed by 6,446,223,360 bytes. Examples include `/usr/standalone/bootcaches.plist` (24,576 allocated, zero private) and `/usr/standalone/i386/Firmware.scap` (15,732,736 allocated, zero private). The root walk had 934 directory errors. These are sampled, changing-volume observations, not a proof that compressed and system files are the only exceptions.
+
+The `cp -c` original and clone both had the share bit set and zero private bytes. The clone with its sibling deleted kept the bit set but had private bytes equal to allocated bytes. Hard links and a sparse file had the bit clear and matching private and allocated bytes. A real `decmpfs` file in `/Applications/RedirectWeb.app` had the bit clear, 12,288 allocated bytes, and zero private bytes. A `ditto --hfsCompression` trial in the build fixtures did not produce a compressed file.
+
+No scanner shortcut was built. Running the existing passes together might reduce the measured 64.271 s root scan toward a theoretical 39.917 s floor if their work overlapped completely. Both passes spend most of their time in the kernel, so contention could leave the time near 64 s; this range is an estimate, not a concurrent-pass benchmark. The current second pass also needs the first pass's tree and names, so per-directory handoff would be needed to overlap them.
