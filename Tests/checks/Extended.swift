@@ -8,6 +8,26 @@ private final class LiveScanBox: @unchecked Sendable {
     func set(_ scan: LiveScan) { lock.withLock { value = scan } }
     func get() -> LiveScan? { lock.withLock { value } }
 }
+private final class ScanCancelBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Bool, Never>?
+    private var progressSeen = false
+    func set(_ value: Task<Bool, Never>) { lock.withLock { task = value } }
+    func cancelOnProgress(_ done: Int) {
+        lock.withLock {
+            if done > 0 { progressSeen = true; task?.cancel() }
+        }
+    }
+    func didSeeProgress() -> Bool { lock.withLock { progressSeen } }
+}
+private final class SnapshotCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var finished = false
+    func record() { lock.withLock { count += 1 } }
+    func stop() { lock.withLock { finished = true } }
+    func state() -> (Int, Bool) { lock.withLock { (count, finished) } }
+}
 
 @MainActor func runExtendedChecks(base: URL) async -> (tests: Int, failures: Int) {
     let fm = FileManager.default
@@ -482,5 +502,43 @@ private final class LiveScanBox: @unchecked Sendable {
         }
         verify("phase two ignores cancellation", await secondTask!.value)
     } catch { verify("cancel setup: \(error)", false) }
+    do {
+        let dir = try folder("bug-concurrent-finalization")
+        for i in 0..<320 {
+            let sub = dir.appendingPathComponent("d\(i)")
+            try fm.createDirectory(at: sub, withIntermediateDirectories: true)
+            try put(sub.appendingPathComponent("f.dat"))
+        }
+        let liveBox = LiveScanBox(), count = SnapshotCount()
+        let reader = Task.detached {
+            while !count.state().1 {
+                if let model = liveBox.get() {
+                    _ = model.snapshot(childrenOf: [0])
+                    count.record()
+                }
+                await Task.yield()
+            }
+        }
+        var reachedPhase1 = false
+        _ = try await Scanner.scan(root: dir.path, options: ScanOptions(workers: 2), phase1: { _ in
+            reachedPhase1 = true
+            count.stop()
+        }, live: { liveBox.set($0) })
+        count.stop()
+        await reader.value
+        verify("phase one finalization overlaps live snapshots", reachedPhase1 && count.state().0 > 0)
+        let cancelBox = ScanCancelBox()
+        let phase2Task = Task { () -> Bool in
+            do {
+                _ = try await Scanner.scan(root: dir.path, options: ScanOptions(workers: 1), phase2Progress: { done, _ in cancelBox.cancelOnProgress(done) })
+                return false
+            } catch DiskCore.Scanner.ScanError.cancelled { return true }
+            catch is CancellationError { return true }
+            catch { return false }
+        }
+        cancelBox.set(phase2Task)
+        let phase2Cancelled = await phase2Task.value
+        verify("cancellation during active phase two", cancelBox.didSeeProgress() && phase2Cancelled)
+    } catch { verify("finalization and phase two setup: \(error)", false) }
     return (tests, failures)
 }

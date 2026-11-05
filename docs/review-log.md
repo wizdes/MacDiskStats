@@ -20,3 +20,7 @@ Sol fixed all 18 as real. Root reran the suite: 90 of 90, no skips. Fix rounds: 
 ## Round 2 (Astra, 2026-11-05, on 53779c4)
 
 13 findings; root rejected 12 because the brief asked for two map updates a second. Sol fixed the rest and timed out before its report; root reran the suite: 123 of 123.
+
+## Round 3 (Astra fix check, 2026-11-05)
+
+7 fixed, 5 partly fixed, 2 new blockers. Sol closed the blockers and strengthened the tests. Root reran: suite 127 of 127, sandbox probe refused all 3 writes. Limit of 3 rounds reached; no blocking bug known open. Follow-ups: real scan of an invalid UTF-8 folder (APFS refuses to create one), proof of bounded render memory, pre-fix failure not proved for the 4 strengthened tests.

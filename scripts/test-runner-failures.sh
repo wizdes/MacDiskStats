@@ -38,7 +38,7 @@ cat > "$fixture/bin/rg" <<'SCRIPT'
 if [[ ${RG_EXIT:-0} != 0 && $1 == '^_(unlink|'* ]]; then exit "$RG_EXIT"; fi
 exec "$REAL_RG" "$@"
 SCRIPT
-for name in test-icon.sh check-readonly.sh check-scanner-races.sh check-clone-accounting.sh check-raw-path.sh check-entitlements.sh sandbox-probe.sh test-runner-failures.sh; do
+for name in test-icon.sh check-readonly.sh check-scanner-races.sh check-fallback-batches.sh check-clone-accounting.sh check-raw-path.sh check-entitlements.sh sandbox-probe.sh test-runner-failures.sh; do
   cat > "$fixture/scripts/$name" <<'SCRIPT'
 #!/bin/zsh
 exit 0
@@ -60,5 +60,13 @@ for kind in unit summary nm strings search; do
   if (( result == 0 )); then print "FAIL bug: test runner accepts failed $kind command"; fail=$((fail+1))
   else print "PASS bug: test runner rejects failed $kind command"; fi
 done
-print "runner failure checks 5, failed $fail"
+for checker in check-scanner-races check-clone-accounting check-raw-path; do
+  if scripts/$checker.sh /dev/null/nonexistent > "$fixture/$checker.log" 2>&1; then
+    print "FAIL bug: $checker accepts unreadable source"
+    fail=$((fail+1))
+  else
+    print "PASS bug: $checker rejects unreadable source"
+  fi
+done
+print "runner failure checks 8, failed $fail"
 (( fail == 0 ))

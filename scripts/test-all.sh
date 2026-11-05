@@ -36,6 +36,8 @@ if (( fail == 0 )); then
   mkdir -p "$fixture/nested"
   dd if=/dev/zero of="$fixture/large.txt" bs=4096 count=8 2>/dev/null
   dd if=/dev/zero of="$fixture/nested/other.png" bs=4096 count=4 2>/dev/null
+  mkdir -p "$fixture/nested/dir10000"
+  for ((late=0; late<20; late++)); do dd if=/dev/zero of="$fixture/nested/dir10000/late-$late.png" bs=4096 count=1 2>/dev/null; done
   dd if=/dev/zero of="$fixture/delete-me.txt" bs=4096 count=1 2>/dev/null
   mkdir -p "$fixture"/nested/dir{1..10000}
   build/MacDiskStats.app/Contents/MacOS/MacDiskStats --e2e fixture --scan "$fixture" > build/test-e2e.log 2>&1 &
@@ -60,6 +62,8 @@ scripts/check-readonly.sh > build/test-source-readonly.log 2>&1
 record 'source read-only scan' $?
 scripts/check-scanner-races.sh > build/test-scanner-races.log 2>&1
 record 'scanner race source check' $?
+scripts/check-fallback-batches.sh > build/test-fallback-batches.log 2>&1
+record 'fallback live batch source check' $?
 scripts/check-clone-accounting.sh > build/test-clone-accounting.log 2>&1
 record 'clone accounting source check' $?
 scripts/check-raw-path.sh > build/test-raw-path.log 2>&1
@@ -90,7 +94,7 @@ if [[ -f build/release/MacDiskStats.app/Contents/MacOS/MacDiskStats ]]; then
   strings "$binary" > build/test-strings.log
   stringsExit=$?
   if (( stringsExit != 0 )); then record 'strings inspects release binary' "$stringsExit"
-  elif rg 'DebugSnapshot|--e2e|snapshot saved' build/test-strings.log; then record 'release excludes debug snapshot and e2e' 1
+  elif rg 'DebugSnapshot|--e2e|snapshot saved|live first tree row|live first map' build/test-strings.log; then record 'release excludes debug snapshot, e2e, and timing strings' 1
   elif (( $? == 1 )); then record 'release excludes debug snapshot and e2e' 0
   else record 'release string search completed' 1; fi
   print "release imports: $(wc -l < build/test-imports.log)"

@@ -85,6 +85,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var e2eScript: String?
     private var e2eCancelOnLive = false
     private var e2eCancelledLive = false
+    private var e2eRefreshAfterCapture: (() -> Void)?
     #endif
     private var dark: Bool { window?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
 
@@ -469,12 +470,13 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             #endif
         }
         guard let model = liveScan, tree == nil else { return }
-        let oldSelection = selectedNode
-        let oldScroll = outline.enclosingScrollView?.contentView.bounds.origin
         let expanded = Array(expandedIDs)
         let ids = Array(Set([Int32(0), zoomNode] + expanded + (liveRows[zoomNode] ?? []).prefix(Tokens.livePreviewLimit).filter(\.isDirectory).map(\.id)))
         let maySort = Date().timeIntervalSince(lastLiveSort) >= 1 && !((outline as? ActionOutlineView)?.pointerInside ?? false) && !((outline as? ActionOutlineView)?.acting ?? false)
         let oldRows = liveRows
+        #if DEBUG
+        e2eRefreshAfterCapture?()
+        #endif
         let (frame, preparedRows, changed) = await Task.detached(priority: .userInitiated) { () -> (LiveSnapshot, [Int32: [LiveNode]], Bool) in
             let frame = model.snapshot(childrenOf: ids)
             var prepared: [Int32: [LiveNode]] = [:]
@@ -492,6 +494,8 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             return (frame, prepared, changed)
         }.value
         guard !Task.isCancelled, liveScan === model, tree == nil else { return }
+        let currentSelection = selectedNode
+        let currentScroll = outline.enclosingScrollView?.contentView.bounds.origin
         let applyStarted = Date()
         liveFrame = frame
         for id in ids {
@@ -524,11 +528,11 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             selecting = true
             outline.reloadData()
             for id in expanded { outline.expandItem(NSNumber(value: id), expandChildren: false) }
-            if let oldSelection {
-                let row = outline.row(forItem: NSNumber(value: oldSelection))
+            if let currentSelection {
+                let row = outline.row(forItem: NSNumber(value: currentSelection))
                 if row >= 0 { outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
             }
-            if let oldScroll { outline.enclosingScrollView?.contentView.scroll(to: oldScroll) }
+            if let currentScroll { outline.enclosingScrollView?.contentView.scroll(to: currentScroll) }
             selecting = false
             #if DEBUG
             worstLiveOutlineMs = max(worstLiveOutlineMs, Date().timeIntervalSince(outlineStarted) * 1000)
@@ -539,7 +543,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         }
         if firstLiveRows == nil && outline.numberOfRows > 0 {
             firstLiveRows = Date().timeIntervalSince(liveStarted)
+            #if DEBUG
             print(String(format: "live first tree row %.1f ms", firstLiveRows! * 1000))
+            #endif
         }
         if Date().timeIntervalSince(lastLiveMap) >= 0.5 { showLiveMap(frame) }
         #if DEBUG
@@ -554,7 +560,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         lastLiveMap = Date()
         if firstLiveMap == nil {
             firstLiveMap = Date().timeIntervalSince(liveStarted)
+            #if DEBUG
             print(String(format: "live first map %.1f ms", firstLiveMap! * 1000))
+            #endif
         }
     }
     @objc private func cancelScan() {
@@ -1003,6 +1011,24 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         check("bug: map and file types stay blank during phase one", sawLiveRows && mapView.hasPreview && types.numberOfRows > 0)
         check("bug: folder has no sizing state during scan", sawSizing)
         check("bug: expanding during scan loses live children", liveFolder.map { outline.isItemExpanded(NSNumber(value: $0)) } == true)
+        if let liveFolder {
+            liveTickTask?.cancel()
+            selectNode(0, fromMap: true)
+            liveRows[0] = []
+            e2eRefreshAfterCapture = { [weak self] in
+                guard let self else { return }
+                self.selectNode(liveFolder, fromMap: true)
+            }
+            await refreshLive()
+            e2eRefreshAfterCapture = nil
+            check("bug: live refresh overrides selection made during snapshot", selectedNode == liveFolder && outline.item(atRow: outline.selectedRow) as? NSNumber == NSNumber(value: liveFolder))
+            liveTickTask = Task { [weak self] in
+                while let self, self.isScanning, self.tree == nil, !Task.isCancelled {
+                    await self.refreshLive()
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+            }
+        } else { check("bug: live refresh overrides selection made during snapshot", false) }
         var emptyLiveFolder: Int32?
         if let liveFolder {
             for _ in 0..<100 {
@@ -1026,7 +1052,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         guard let tree else {
             check("fixture scan completed", false); print("e2e \(passed) passed, \(failed) failed"); NSApp.terminate(nil); return
         }
-        check("bug: selected live type changes at final handoff", selectedLiveExtension != nil && highlightedType.flatMap { id in id >= 0 && Int(id) < tree.extensions.count ? tree.extensions[Int(id)].name : nil } == selectedLiveExtension)
+        check("bug: selected live type changes rank at final handoff", selectedLiveExtension != nil && tree.extensions.first?.name != selectedLiveExtension && highlightedType.flatMap { id in id >= 0 && Int(id) < tree.extensions.count ? tree.extensions[Int(id)].name : nil } == selectedLiveExtension)
         check("bug: live selection and zoom lost across scan phases", liveFolder == nil || selectedNode == liveFolder && zoomNode == liveFolder)
         zoomTop(); await mapTask?.value
         await mapTask?.value
@@ -1128,20 +1154,26 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             check("phase update keeps expansion", outline.isItemExpanded(NSNumber(value: folder)))
             check("bug: phase update loses outline scroll", scrollBefore > 0 && abs((clip?.bounds.origin.y ?? -1) - scrollBefore) < 2)
         } else { check("phase update fixture folder exists", false) }
+        let otherFixture = URL(fileURLWithPath: rootPath).appendingPathComponent("nested").path
         startScan(rootPath)
         for _ in 0..<200 where (liveScan?.completedDirectories ?? 0) == 0 { try? await Task.sleep(for: .milliseconds(5)) }
         let oldScanWasActive = (liveScan?.completedDirectories ?? 0) > 0
-        startScan(rootPath)
+        startScan(otherFixture)
         for _ in 0..<200 where isScanning || self.tree == nil { try? await Task.sleep(for: .milliseconds(50)) }
-        check("bug: active rescan publishes stale first scan", oldScanWasActive && !isScanning && self.tree?.rootPath == rootPath && (self.tree?.filesSeen ?? 0) >= 2)
+        check("bug: active rescan publishes stale first scan", oldScanWasActive && !isScanning && self.tree?.rootPath == otherFixture && self.tree?.children.contains(where: { self.tree?.path(of: $0).hasSuffix("other.png") == true }) == true && self.tree?.children.contains(where: { self.tree?.path(of: $0).hasSuffix("large.txt") == true }) == false)
         startScan(rootPath); cancelScan()
         check("Cancel action stops scan", !isScanning && status.stringValue.contains("cancelled"))
-        e2eCancelledLive = false; e2eCancelOnLive = true
         startScan(rootPath)
-        for _ in 0..<200 where !e2eCancelledLive {
+        var workersActive = false
+        for _ in 0..<200 {
+            if let model = liveScan, model.completedDirectories > 1 && isScanning && self.tree == nil {
+                workersActive = true
+                cancelScan()
+                break
+            }
             try? await Task.sleep(for: .milliseconds(5))
         }
-        check("bug: cancelling during live updates leaves stale rows", e2eCancelledLive && liveScan == nil && outline.numberOfRows == 0 && mapView.layoutData == nil && !isScanning)
+        check("bug: cancelling during live updates leaves stale rows", workersActive && liveScan == nil && outline.numberOfRows == 0 && mapView.layoutData == nil && !isScanning)
         startScan(rootPath)
         for _ in 0..<200 where liveScan == nil { try? await Task.sleep(for: .milliseconds(5)) }
         let hadFailedLive = liveScan != nil

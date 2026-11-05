@@ -568,9 +568,11 @@ private func fallback(_ fd: Int32, _ job: Job, _ s: State) {
     let dupFD = dup(fd); guard dupFD >= 0, let dir = fdopendir(dupFD) else { if dupFD >= 0 { close(dupFD) }; s.markUnreadable(job.id); return }
     defer { closedir(dir) }
     var batchBytes: Int64 = 0
+    var batchCount = 0
     defer { s.addLiveAncestors(batchBytes, below: job.id) }
     while let d = readdir(dir) {
         if s.isCancelled() { return }
+        batchCount += 1
         withUnsafePointer(to: d.pointee.d_name) { tuple in tuple.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { pointer in
             let length = Int(strlen(pointer))
             if length == 1 && pointer[0] == 46 || length == 2 && pointer[0] == 46 && pointer[1] == 46 { return }
@@ -588,6 +590,11 @@ private func fallback(_ fd: Int32, _ job: Job, _ s: State) {
             batchBytes += s.add(e, parent: job.id, path: relative,
                                 rawPath: job.rawPath || (e.type == UInt32(VDIR.rawValue) && String(bytes: (0..<length).map { UInt8(bitPattern: pointer[$0]) }, encoding: .utf8) == nil))
         } }
+        if batchCount == 256 {
+            s.addLiveAncestors(batchBytes, below: job.id)
+            batchBytes = 0
+            batchCount = 0
+        }
     }
 }
 
