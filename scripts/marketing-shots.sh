@@ -30,6 +30,6 @@ done
 # Use a relative scan path so the screenshot contains no real home-directory name.
 for appearance in light dark; do
   MACDISKSTATS_SNAPSHOT_DIR="$(pwd)/$shots" build/MacDiskStats.app/Contents/MacOS/MacDiskStats --scan "$fixture/sam" --appearance "$appearance" --snapshot "$(pwd)/$shots/finished-$appearance.png"
-  MACDISKSTATS_SNAPSHOT_DIR="$(pwd)/$shots" build/MacDiskStats.app/Contents/MacOS/MacDiskStats --scan "$fixture/sam" --appearance "$appearance" --snapshot-at-seconds 0.3 --snapshot "$(pwd)/$shots/scanning-$appearance.png"
+  MACDISKSTATS_SNAPSHOT_DIR="$(pwd)/$shots" build/MacDiskStats.app/Contents/MacOS/MacDiskStats --snapshot-start "$(pwd)/$shots/start-$appearance.png" --appearance "$appearance"
 done
 for image in "$shots"/*.png; do test -s "$image"; sips -g pixelWidth -g pixelHeight "$image" | tail -2; done

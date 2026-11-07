@@ -33,6 +33,10 @@ Finished scan, light and dark:
 ![Finished scan in light mode](docs/shots/finished-light.png)
 ![Finished scan in dark mode](docs/shots/finished-dark.png)
 
+On launch, a sheet asks which disk or folder to scan:
+
+![Start sheet in light mode](docs/shots/start-light.png)
+
 Scan in progress, light and dark:
 
 
