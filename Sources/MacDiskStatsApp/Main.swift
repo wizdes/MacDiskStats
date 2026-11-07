@@ -1,6 +1,15 @@
 import AppKit
 import DiskCore
 import QuickLookUI
+import UniformTypeIdentifiers
+
+@MainActor private final class AppearanceView: NSView {
+    var onAppearanceChange: (() -> Void)?
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange?()
+    }
+}
 
 private struct MapRenderRequest: Sendable {
     let tree: FileTree
@@ -85,7 +94,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var snapshotAppearance: String?
     private var snapshotMinWidth = false
     private var volumeFreeBytes: Int64 = 0
-    private let folderIcon = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+    private let folderIcon = NSWorkspace.shared.icon(for: .folder)
     private let fileIcon = NSImage(systemSymbolName: "doc", accessibilityDescription: nil)
     private let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
@@ -98,6 +107,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var e2eCancelOnLive = false
     private var e2eCancelledLive = false
     private var e2eRefreshAfterCapture: (() -> Void)?
+    private var e2ePhaseTwoClick: (() -> Void)?
     #endif
     private var dark: Bool { window?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
 
@@ -114,7 +124,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             if event.keyCode == 49 && !event.modifierFlags.contains(.command) && self?.selectedNode != nil { self?.quickLook(); return nil }
             return event
         }
-        content = NSView(frame: NSRect(origin: .zero, size: Tokens.windowSize))
+        let appearanceView = AppearanceView(frame: NSRect(origin: .zero, size: Tokens.windowSize))
+        appearanceView.onAppearanceChange = { [weak self] in self?.refreshAppearance() }
+        content = appearanceView
         window = NSWindow(contentRect: NSRect(origin: .zero, size: Tokens.windowSize), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "MacDiskStats"
         window.minSize = NSSize(width: Tokens.minWindowWidth, height: Tokens.minTopHeight + Tokens.minMapHeight + Tokens.statusHeight)
@@ -158,7 +170,6 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func windowDidResize(_ notification: Notification) { layoutStatusLine(); scheduleMapRender() }
     func windowDidChangeBackingProperties(_ notification: Notification) { scheduleMapRender() }
-    func windowDidChangeEffectiveAppearance(_ notification: Notification) { refreshAppearance() }
 
     private func parseArguments() {
         let args = CommandLine.arguments
@@ -554,8 +565,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let typesStarted = Date()
         types.reloadData()
         if let selectedType, let newIndex = result.extensions.firstIndex(where: { $0.name == selectedType }) {
-            highlightedType = Int32(newIndex)
+            highlightedType = nil
             types.selectRowIndexes(IndexSet(integer: newIndex), byExtendingSelection: false)
+            highlightedType = Int32(newIndex)
         }
         if let topTable {
             topIDs = result.largestFiles
@@ -569,6 +581,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         #endif
         let statusStarted = Date()
         updateStatus(); updateBanner()
+        #if DEBUG
+        if !final { e2ePhaseTwoClick?(); e2ePhaseTwoClick = nil }
+        #endif
         #if DEBUG
         if measureLive { print(String(format: "measure live status and banner %.1f ms", Date().timeIntervalSince(statusStarted) * 1000)) }
         #endif
@@ -624,8 +639,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         liveTypes = frame.extensions
         types.reloadData()
         if let selectedLiveType, let newIndex = liveTypes.firstIndex(where: { $0.name == selectedLiveType }) {
-            highlightedType = Int32(newIndex)
+            highlightedType = nil
             types.selectRowIndexes(IndexSet(integer: newIndex), byExtendingSelection: false)
+            highlightedType = Int32(newIndex)
         } else if selectedLiveType != nil {
             highlightedType = nil
             types.deselectAll(nil)
@@ -1265,6 +1281,18 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode) else { return }
             NSApp.sendEvent(event)
         }
+        func clickPathItem(at index: Int) -> Bool {
+            guard let pathBar = self.pathBar, let cell = pathBar.cell as? NSPathCell, index < cell.pathComponentCells.count else { return false }
+            let component = cell.pathComponentCells[index]
+            let rect = cell.rect(of: component, withFrame: pathBar.bounds, in: pathBar)
+            guard !rect.isEmpty else { return false }
+            let location = pathBar.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+            guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1),
+                  let up = NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0) else { return false }
+            NSApp.sendEvent(down)
+            NSApp.sendEvent(up)
+            return true
+        }
         let volumeButtons = startView?.subviews.compactMap { $0 as? NSButton }.filter { $0.identifier?.rawValue == "/" || $0.identifier?.rawValue.hasPrefix("/Volumes/") == true } ?? []
         check("start screen lists disks", startView != nil && !volumeButtons.isEmpty)
         if script == "start" {
@@ -1291,10 +1319,10 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             sendKey(45, "n", .command)
             check("bug: Cmd-N with sheet open does not queue another", startSheet != nil && window.attachedSheet === startSheet)
             let originalHost = scanView
-            if let rootPath { volumePaths = [rootPath]; selectedVolume = 0; sendKey(36, "\r") }
-            if startSheet != nil { scanSelectedVolume() }
+            let expectedPath = rootPath
+            if let expectedPath { volumePaths = [expectedPath]; selectedVolume = 0; sendKey(36, "\r") }
             check("bug: sheet Scan keeps the same layout", startSheet == nil && isScanning && scanView === originalHost)
-            check("bug: Return starts selected scan", isScanning && rootPath == self.rootPath)
+            check("bug: Return starts selected scan", isScanning && self.rootPath == expectedPath)
             check("bug: progress does not cover scanning text", status.frame.maxX <= progress.frame.minX - Tokens.inset)
             progress.isIndeterminate = false; progress.doubleValue = 47
             check("bug: progress fill matches 47 percent", abs(progress.fillWidth - progress.bounds.width * 0.47) <= 2)
@@ -1332,10 +1360,26 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         closeStartSheet()
         startScan(rootPath)
         var sawLiveRows = false, sawSizing = false, liveFolder: Int32?
+        var selectedLiveExtension: String?
+        var clickedPhaseTwo = false
+        e2ePhaseTwoClick = { [weak self] in
+            guard let self, let liveFolder else { check("bug: phase two path click selects and zooms", false); return }
+            self.selectNode(liveFolder, fromMap: true)
+            self.selectedNode = nil; self.zoomNode = 0
+            clickedPhaseTwo = clickPathItem(at: 1)
+            check("bug: phase two path click selects and zooms", clickedPhaseTwo && self.checkingSharedFiles && self.selectedNode == liveFolder && self.zoomNode == liveFolder)
+            if let selectedLiveExtension, let row = self.tree?.extensions.firstIndex(where: { $0.name == selectedLiveExtension }) {
+                self.types.deselectAll(nil)
+                self.highlightedType = nil
+                self.types.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                self.highlightedType = Int32(row)
+            }
+        }
         for _ in 0..<200 {
             if tree != nil { break }
             if let model = liveScan, outline.numberOfRows > 0 {
                 sawLiveRows = true
+                if selectedLiveExtension == nil { selectedLiveExtension = liveTypes.first?.name }
                 if let folder = model.children(of: 0).first(where: { $0.isDirectory && $0.isSizing }) {
                     sawSizing = true; liveFolder = folder.id
                     outline.expandItem(NSNumber(value: folder.id))
@@ -1353,6 +1397,10 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if let liveFolder {
             selectNode(liveFolder, fromMap: true)
             check("bug: live path bar follows node ids", !pathBar.isHidden && pathBar.pathItems.count > 1 && pathBar.pathItems.last?.title == liveScan?.node(liveFolder)?.name)
+            selectedNode = nil; zoomNode = 0
+            let clicked = clickPathItem(at: 1)
+            await Task.yield()
+            check("bug: phase one path click selects and zooms", clicked && tree == nil && selectedNode == liveFolder && zoomNode == liveFolder)
         }
         check("bug: expanding during scan loses live children", liveFolder.map { outline.isItemExpanded(NSNumber(value: $0)) } == true)
         if let liveFolder {
@@ -1387,12 +1435,16 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         }
         check("bug: empty live zoom retains old map hit targets", emptyLiveFolder != nil && !mapView.hasPreview)
         if let liveFolder { zoomNode = liveFolder; if let model = liveScan { showLiveMap(model.snapshot(childrenOf: [liveFolder])) } }
-        let selectedLiveExtension = liveTypes.first?.name
-        if selectedLiveExtension != nil { types.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+        if let selectedLiveExtension, let row = liveTypes.firstIndex(where: { $0.name == selectedLiveExtension }) {
+            types.deselectAll(nil)
+            highlightedType = nil
+            types.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
         check("bug: live Quick Look advertises missing item", selectedNode == nil || numberOfPreviewItems(in: QLPreviewPanel.shared()) == 0)
         for _ in 0..<200 where isScanning || tree == nil || mapView.layoutData == nil {
             try? await Task.sleep(for: .milliseconds(50))
         }
+        if !clickedPhaseTwo { check("bug: phase two path click selects and zooms", false) }
         guard let tree else {
             check("fixture scan completed", false); print("e2e \(passed) passed, \(failed) failed"); NSApp.terminate(nil); return
         }
@@ -1421,6 +1473,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let percentColumn = outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("%"))
         let percentCell = cellView(in: outline, key: "%", right: true)
         check("bug: percent cells fit 100 percent", percentColumn.map { $0.minWidth >= Tokens.treeColumns.last?.1 ?? 0 } == true && ("100.0%" as NSString).size(withAttributes: [.font: Tokens.numberFont]).width <= (percentCell.textField?.frame.width ?? 0))
+        let typePercentColumn = types.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("%"))
+        let typePercentCell = cellView(in: types, key: "%", right: true)
+        check("bug: type percent cells fit 100 percent", typePercentColumn.map { $0.minWidth >= Tokens.typeColumns.last?.1 ?? 0 } == true && ("100.0%" as NSString).size(withAttributes: [.font: Tokens.numberFont]).width <= (typePercentCell.textField?.frame.width ?? 0))
         if let unreadable = tree.parent.indices.first(where: { tree.flags[$0].contains(.unreadable) }), let percentColumn {
             let percent = outlineView(outline, viewFor: percentColumn, item: NSNumber(value: unreadable)) as? NSTableCellView
             check("bug: unreadable appears only in Size column", percent?.textField?.stringValue == "—")
@@ -1451,6 +1506,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         check("bug: path bar has one item per folder from scan root", pathBar?.pathItems.count == pathIDs.count && zip(pathBar?.pathItems ?? [], pathIDs).allSatisfy { $0.url?.path == tree.path(of: $1) })
         check("bug: path items have direct node identity", pathBar?.pathItems.count == pathIDs.count && zip(pathBar?.pathItems ?? [], pathIDs).allSatisfy { pathItemNodes[ObjectIdentifier($0)] == $1 })
         check("bug: path items use file and folder icons", pathBar?.pathItems.last?.image != nil && pathBar?.pathItems.dropLast().allSatisfy { $0.image === folderIcon } == true)
+        check("bug: drawn path cells use folder icons", folderIcon.isTemplate == false && (pathBar?.cell as? NSPathCell).map { cell in cell.pathComponentCells.dropLast().allSatisfy { $0.image === folderIcon } } == true)
         if let link = tree.parent.indices.first(where: { tree.flags[$0].contains(.symlink) }) {
             selectNode(Int32(link), fromMap: true)
             check("bug: symlink path keeps its node identity", self.pathBar.pathItems.last.flatMap { pathItemNodes[ObjectIdentifier($0)] } == Int32(link))
@@ -1547,7 +1603,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         progress.isHidden = progressWasHidden
         window.setContentSize(wideSize); scheduleMapRender(); await mapTask?.value
         for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-            window.appearance = NSAppearance(named: appearance); refreshAppearance(); renderMap(); await mapTask?.value
+            window.appearance = NSAppearance(named: appearance)
+            try? await Task.sleep(for: .milliseconds(50))
+            await mapTask?.value
             check("\(name) map renders", mapView.layoutData?.boxCount ?? 0 > 0)
             check("bug: \(name) status labels follow appearance", summary.textColor == Tokens.muted(dark) && estimateNote.textColor == Tokens.muted(dark))
         }

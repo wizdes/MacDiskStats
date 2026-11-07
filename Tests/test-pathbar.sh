@@ -14,12 +14,16 @@ for name in \
 done
 for name in \
   'live path bar follows node ids' \
+  'phase one path click selects and zooms' \
   'phase two path bar keeps node ids' \
+  'phase two path click selects and zooms' \
   'path control refuses outside root drops' \
   'percent cells fit 100 percent' \
   'unreadable appears only in Size column' \
   'path items have direct node identity' \
   'path items use file and folder icons' \
+  'drawn path cells use folder icons' \
+  'type percent cells fit 100 percent' \
   'symlink path keeps its node identity' \
   'colliding display names keep distinct ids' \
   'volume root slash has one path item' \
