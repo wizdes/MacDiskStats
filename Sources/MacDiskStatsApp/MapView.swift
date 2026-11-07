@@ -20,6 +20,7 @@ import DiskCore
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
+        layer?.masksToBounds = true
         layer?.addSublayer(imageLayer)
         layer?.addSublayer(previewLayer)
         layer?.addSublayer(frameLayer)
@@ -175,7 +176,8 @@ import DiskCore
         frameLayer.strokeColor = Tokens.frame(dark).cgColor
         frameLayer.lineWidth = Tokens.mapFrameWidth
         frameLayer.shadowColor = Tokens.frameShadow(dark).cgColor
-        frameLayer.shadowOpacity = 1
+        let touchesBoundary = box.x <= 0 || box.y <= 0 || box.x + box.width >= layoutData.width || box.y + box.height >= layoutData.height
+        frameLayer.shadowOpacity = touchesBoundary ? 0 : 1
         frameLayer.shadowRadius = Tokens.mapFrameWidth
     }
 

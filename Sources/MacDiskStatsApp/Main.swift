@@ -11,6 +11,16 @@ import UniformTypeIdentifiers
     }
 }
 
+@MainActor private final class AlignedHeaderCell: NSTableHeaderCell {
+    var leadingInset: CGFloat = 0
+    var trailingInset: CGFloat = 0
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        let frame = NSRect(x: cellFrame.minX + leadingInset, y: cellFrame.minY,
+                           width: max(0, cellFrame.width - leadingInset - trailingInset), height: cellFrame.height)
+        super.drawInterior(withFrame: frame, in: controlView)
+    }
+}
+
 private struct MapRenderRequest: Sendable {
     let tree: FileTree
     let root: Int32
@@ -93,6 +103,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var snapshotPath: String?
     private var snapshotAppearance: String?
     private var snapshotMinWidth = false
+    private var snapshotTop100Path: String?
     private var volumeFreeBytes: Int64 = 0
     // The light-mode blue folder, drawn once, so dark mode shows the same icon.
     private let folderIcon: NSImage = {
@@ -194,6 +205,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             if args[i] == "--snapshot-mid-scan", i + 1 < args.count { snapshotMidPath = args[i + 1]; continue }
             if args[i] == "--snapshot-start", i + 1 < args.count { snapshotStartPath = args[i + 1]; continue }
             if args[i] == "--snapshot-min-width" { snapshotMinWidth = true; continue }
+            if args[i] == "--snapshot-top100", i + 1 < args.count { snapshotTop100Path = args[i + 1]; continue }
             if args[i] == "--measure" { measurePending = true; continue }
             if args[i] == "--measure-live" { measureLive = true; continue }
             if args[i] == "--e2e", i + 1 < args.count { e2eScript = args[i + 1]; continue }
@@ -269,7 +281,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             let icon = NSImageView(frame: NSRect(x: 8, y: 8, width: Tokens.sheetIconSize, height: Tokens.sheetIconSize))
             icon.image = volumeIcon(for: url.path, scale: sheet.backingScaleFactor); row.addSubview(icon)
             let nameLabel = label(name, font: Tokens.bodyFont, color: Tokens.text(dark))
-            nameLabel.frame = NSRect(x: 46, y: 4, width: 190, height: 17); row.addSubview(nameLabel)
+            nameLabel.frame = NSRect(x: 46, y: 4, width: Tokens.sheetNameWidth, height: 17); row.addSubview(nameLabel)
             let sizeLabel = label(total > 0 ? "\(format(used)) of \(format(total))" : "Size unavailable", font: Tokens.statusFont, color: Tokens.muted(dark))
             sizeLabel.alignment = .right; sizeLabel.frame = NSRect(x: 230, y: 4, width: 168, height: 17); row.addSubview(sizeLabel)
             let bar = NSView(frame: NSRect(x: 46, y: 34, width: Tokens.sheetBarWidth, height: Tokens.sheetBarHeight))
@@ -283,9 +295,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         choose.bezelStyle = .rounded; choose.font = Tokens.bodyFont
         choose.frame = NSRect(x: Tokens.sheetPadding, y: 20, width: 135, height: Tokens.sheetButtonHeight); host.addSubview(choose)
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(closeStartSheet))
-        cancel.bezelStyle = .rounded; cancel.frame = NSRect(x: 257, y: 20, width: Tokens.sheetButtonWidth, height: Tokens.sheetButtonHeight); host.addSubview(cancel)
+        cancel.bezelStyle = .rounded; cancel.frame = NSRect(x: Tokens.sheetCancelX, y: 20, width: Tokens.sheetButtonWidth, height: Tokens.sheetButtonHeight); host.addSubview(cancel)
         let scan = NSButton(title: "Scan", target: self, action: #selector(scanSelectedVolume))
-        scan.bezelStyle = .rounded; scan.keyEquivalent = "\r"; scan.frame = NSRect(x: 350, y: 20, width: Tokens.sheetButtonWidth, height: Tokens.sheetButtonHeight); host.addSubview(scan)
+        scan.bezelStyle = .rounded; scan.keyEquivalent = "\r"; scan.frame = NSRect(x: Tokens.sheetScanX, y: 20, width: Tokens.sheetButtonWidth, height: Tokens.sheetButtonHeight); host.addSubview(scan)
         startSheet = sheet; updateVolumeSelection()
         window.beginSheet(sheet)
         sheet.defaultButtonCell = scan.cell as? NSButtonCell
@@ -346,7 +358,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let host = NSView(frame: content.bounds); host.autoresizingMask = [.width, .height]
         content.addSubview(host); scanView = host
         let status = label("", font: Tokens.statusFont, color: Tokens.muted(dark))
-        status.frame = NSRect(x: Tokens.inset, y: 0, width: host.bounds.width - Tokens.inset * 2, height: Tokens.statusHeight)
+        status.frame = NSRect(x: Tokens.statusMargin, y: (Tokens.statusHeight - Tokens.statusLabelHeight) / 2, width: host.bounds.width - Tokens.statusMargin * 2, height: Tokens.statusLabelHeight)
         status.autoresizingMask = [.width, .maxYMargin]; status.alignment = .center
         host.addSubview(status); self.status = status
         let map = MapView(frame: .zero); mapView = map
@@ -368,6 +380,12 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             if name == "%" { c.minWidth = width }
             c.headerCell.font = Tokens.headerFont
             if name != "Name" { c.headerCell.alignment = .right }
+            let header = AlignedHeaderCell(textCell: name)
+            header.font = Tokens.headerFont
+            header.alignment = name == "Name" ? .left : .right
+            header.leadingInset = name == "Name" ? Tokens.treeHeaderIndent : 0
+            header.trailingInset = name == "%" ? Tokens.percentCellInset : (name == "Name" ? 0 : Tokens.cellInset)
+            c.headerCell = header
             if name == "Frees" { outline.headerView?.toolTip = "At least this much space comes back if you delete this." }
             outline.addTableColumn(c)
         }
@@ -383,6 +401,12 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             if name == "%" { c.minWidth = width }
             c.headerCell.font = Tokens.headerFont
             if name != "Type" { c.headerCell.alignment = .right }
+            let header = AlignedHeaderCell(textCell: name)
+            header.font = Tokens.headerFont
+            header.alignment = name == "Type" ? .left : .right
+            header.leadingInset = name == "Type" ? Tokens.cellInset + Tokens.swatchSize + Tokens.iconTextGap : 0
+            header.trailingInset = name == "%" ? Tokens.percentCellInset : (name == "Type" ? 0 : Tokens.cellInset)
+            c.headerCell = header
             types.addTableColumn(c)
         }
         typeScroll.documentView = types
@@ -390,11 +414,11 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         panes.autoresizingMask = [.width, .height]
         host.addSubview(panes)
         panes.layoutSubtreeIfNeeded()
-        progress = StatusProgressView(frame: NSRect(x: Tokens.inset, y: Tokens.statusBarInset, width: Tokens.statusBarWidth, height: Tokens.statusBarHeight))
+        progress = StatusProgressView(frame: NSRect(x: Tokens.statusMargin, y: (Tokens.statusHeight - Tokens.statusBarHeight) / 2, width: Tokens.statusBarWidth, height: Tokens.statusBarHeight))
         progress.style = .bar; progress.minValue = 0; progress.maxValue = 100; progress.isIndeterminate = true; progress.startAnimation(nil)
         progress.autoresizingMask = [.maxYMargin]; host.addSubview(progress)
-        status.frame.origin.x = Tokens.inset + Tokens.statusBarWidth + Tokens.inset
-        status.frame.size.width = host.bounds.width - status.frame.origin.x - Tokens.inset
+        status.frame.origin.x = Tokens.statusMargin + Tokens.statusBarWidth + Tokens.statusGap
+        status.frame.size.width = host.bounds.width - status.frame.origin.x - Tokens.statusMargin
         let pathBar = NSPathControl(frame: .zero)
         pathBar.pathStyle = .standard
         pathBar.isEditable = false
@@ -422,6 +446,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let version = scanVersion
         tree = nil; liveScan = nil; liveFrame = nil; liveRows = [:]; liveTypes = []; expandedIDs = []; liveTickTask?.cancel(); checkingSharedFiles = false; rootPath = path; zoomNode = 0; selectedNode = nil; hoveredNode = nil; highlightedType = nil; bannerDismissed = false; fullStatusSummary = ""
         banner?.removeFromSuperview(); banner = nil
+        (mapView?.superview as? PaneLayoutView)?.reservedBottomHeight = 0
         pathItemNodes.removeAll()
         pathBar?.isHidden = true; summary?.isHidden = true; estimateNote?.isHidden = true; status?.isHidden = false
         liveStarted = Date(); firstLiveRows = nil; firstLiveMap = nil
@@ -997,8 +1022,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         label.alignment = right ? .right : .left
         label.lineBreakMode = .byTruncatingMiddle
         let hasImage = key == "Name" || key == "Type"
-        let leading = key == "%" ? CGFloat(2) : Tokens.cellInset + (hasImage ? Tokens.swatchSize + Tokens.cellInset : 0)
-        let trailing = key == "%" ? CGFloat(2) : Tokens.cellInset
+        let iconSize = key == "Name" ? Tokens.fileIconSize : Tokens.swatchSize
+        let leading = key == "%" ? Tokens.percentCellInset : Tokens.cellInset + (hasImage ? iconSize + Tokens.iconTextGap : 0)
+        let trailing = key == "%" ? Tokens.percentCellInset : Tokens.cellInset
         label.frame = NSRect(x: leading, y: 2, width: max(0, columnWidth - leading - trailing), height: Tokens.rowHeight - 4)
         label.autoresizingMask = .width
         cell.addSubview(label); cell.textField = label
@@ -1009,7 +1035,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             cell.addSubview(spinner)
         }
         if hasImage {
-            let image = NSImageView(frame: NSRect(x: Tokens.cellInset, y: (Tokens.rowHeight - Tokens.swatchSize) / 2, width: Tokens.swatchSize, height: Tokens.swatchSize))
+            let image = NSImageView(frame: NSRect(x: Tokens.cellInset, y: (Tokens.rowHeight - iconSize) / 2, width: iconSize, height: iconSize))
             cell.addSubview(image); cell.imageView = image
         }
         return cell
@@ -1126,39 +1152,52 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
     private func layoutStatusLine() {
         guard let host = scanView, let pathBar, let summary, let estimateNote, let progress else { return }
-        let right = host.bounds.width - Tokens.inset
+        let right = host.bounds.width - Tokens.statusMargin
+        let textY = (Tokens.statusHeight - Tokens.statusLabelHeight) / 2
+        let progressY = (Tokens.statusHeight - Tokens.statusBarHeight) / 2
+        progress.frame.origin.y = progressY
         let progressWidth = progress.isHidden ? 0 : Tokens.statusBarWidth
         if pathBar.isHidden {
             progress.frame.origin.x = right - progressWidth
-            status.frame = NSRect(x: Tokens.inset, y: 0, width: max(0, progress.frame.minX - 2 * Tokens.inset), height: Tokens.statusHeight)
+            let textWidth = min(ceil(status.fittingSize.width),
+                                max(0, progress.frame.minX - Tokens.statusGap - Tokens.statusMargin))
+            status.alignment = .right
+            status.frame = NSRect(x: progress.frame.minX - Tokens.statusGap - textWidth, y: textY,
+                                  width: textWidth, height: Tokens.statusLabelHeight)
             return
         }
         let fullSummary = fullStatusSummary.isEmpty ? summary.stringValue : fullStatusSummary
         let shortSummary = fullSummary.components(separatedBy: Tokens.statusSeparator).first ?? fullSummary
-        let fullEstimateWidth = estimateNote.isHidden ? 0 : ("Some sizes are estimates" as NSString).size(withAttributes: [.font: Tokens.statusFont]).width + Tokens.inset
-        let shortEstimateWidth = estimateNote.isHidden ? 0 : (Tokens.estimateIcon as NSString).size(withAttributes: [.font: Tokens.statusFont]).width + Tokens.inset
-        let fullSummaryWidth = (fullSummary as NSString).size(withAttributes: [.font: Tokens.statusFont]).width + Tokens.inset
-        let shortSummaryWidth = (shortSummary as NSString).size(withAttributes: [.font: Tokens.statusFont]).width + Tokens.inset
-        let budget = max(0, right - Tokens.inset - Tokens.minPathBarWidth - progressWidth - (progressWidth > 0 ? Tokens.inset : 0) - 2 * Tokens.inset)
-        let useShortSummary = fullSummaryWidth + fullEstimateWidth > budget
+        func width(_ value: String, in field: NSTextField) -> CGFloat {
+            field.stringValue = value
+            return ceil(field.fittingSize.width)
+        }
+        let fullEstimateWidth = estimateNote.isHidden ? 0 : width("Some sizes are estimates", in: estimateNote)
+        let shortEstimateWidth = estimateNote.isHidden ? 0 : width(Tokens.estimateIcon, in: estimateNote)
+        let fullSummaryWidth = width(fullSummary, in: summary)
+        let shortSummaryWidth = width(shortSummary, in: summary)
+        let gapCount = 1 + (progressWidth > 0 ? 1 : 0) + (estimateNote.isHidden ? 0 : 1)
+        let budget = max(0, right - Tokens.statusMargin - Tokens.minPathBarWidth - progressWidth - CGFloat(gapCount) * Tokens.statusGap)
+        let summaryBudget = min(host.bounds.width * Tokens.summaryMaxFraction, budget - fullEstimateWidth)
+        let useShortSummary = fullSummaryWidth > summaryBudget
         summary.stringValue = useShortSummary ? shortSummary : fullSummary
         let useIcon = useShortSummary && shortSummaryWidth + fullEstimateWidth > budget
         estimateNote.stringValue = useIcon ? Tokens.estimateIcon : "Some sizes are estimates"
         let estimateWidth = useIcon ? shortEstimateWidth : fullEstimateWidth
-        let summaryWidth = min((summary.stringValue as NSString).size(withAttributes: [.font: Tokens.statusFont]).width + Tokens.inset,
+        let summaryWidth = min(useShortSummary ? shortSummaryWidth : fullSummaryWidth,
                                host.bounds.width * Tokens.summaryMaxFraction, max(0, budget - estimateWidth))
-        summary.frame = NSRect(x: right - summaryWidth, y: 0, width: summaryWidth, height: Tokens.statusHeight)
-        var next = summary.frame.minX - Tokens.inset
+        summary.frame = NSRect(x: right - summaryWidth, y: textY, width: summaryWidth, height: Tokens.statusLabelHeight)
+        var next = summary.frame.minX - Tokens.statusGap
         if !progress.isHidden {
             progress.frame.origin.x = next - Tokens.statusBarWidth
-            next = progress.frame.minX - Tokens.inset
+            next = progress.frame.minX - Tokens.statusGap
         }
         if !estimateNote.isHidden {
-            estimateNote.frame = NSRect(x: next - estimateWidth, y: 0, width: estimateWidth, height: Tokens.statusHeight)
-            next = estimateNote.frame.minX - Tokens.inset
+            estimateNote.frame = NSRect(x: next - estimateWidth, y: textY, width: estimateWidth, height: Tokens.statusLabelHeight)
+            next = estimateNote.frame.minX - Tokens.statusGap
         }
-        pathBar.frame = NSRect(x: Tokens.inset, y: Tokens.pathBarVerticalInset,
-                               width: max(Tokens.minPathBarWidth, next - 2 * Tokens.inset), height: Tokens.statusHeight - 2 * Tokens.pathBarVerticalInset)
+        pathBar.frame = NSRect(x: Tokens.statusMargin, y: Tokens.pathBarVerticalInset,
+                               width: max(Tokens.minPathBarWidth, next - Tokens.statusMargin), height: Tokens.statusHeight - 2 * Tokens.pathBarVerticalInset)
     }
     @objc private func pathItemClicked(_ sender: NSPathControl) {
         guard let item = sender.clickedPathItem, let id = pathItemNodes[ObjectIdentifier(item)] else { updateStatus(); return }
@@ -1176,29 +1215,32 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
     private func updateBanner() {
         banner?.removeFromSuperview(); banner = nil
+        let panes = mapView?.superview as? PaneLayoutView
+        panes?.reservedBottomHeight = 0
         guard let tree, !tree.unreadablePaths.isEmpty, !bannerDismissed, let host = scanView else { return }
+        panes?.reservedBottomHeight = Tokens.bannerHeight
         let row = NSView(frame: NSRect(x: 0, y: Tokens.statusHeight, width: host.bounds.width, height: Tokens.bannerHeight))
         row.autoresizingMask = [.width, .maxYMargin]; row.wantsLayer = true; row.layer?.backgroundColor = Tokens.secondary(dark).cgColor
         let text = label("Some entries could not be read. The map leaves out their contents.", font: Tokens.statusFont, color: Tokens.text(dark))
-        text.frame = NSRect(x: Tokens.inset, y: (Tokens.bannerHeight - Tokens.bannerTextHeight) / 2,
-                            width: row.bounds.width - Tokens.bannerActionWidth - Tokens.bannerCloseWidth - 3 * Tokens.inset - Tokens.bannerGap,
+        text.frame = NSRect(x: Tokens.bannerMargin, y: (Tokens.bannerHeight - Tokens.bannerTextHeight) / 2,
+                            width: row.bounds.width - Tokens.bannerActionWidth - Tokens.bannerCloseWidth - 2 * Tokens.bannerMargin - 2 * Tokens.bannerGap,
                             height: Tokens.bannerTextHeight)
         text.autoresizingMask = [.width]; row.addSubview(text)
         let settings = NSButton(title: "Full Disk Access", target: self, action: #selector(openFullDiskAccess))
         settings.bezelStyle = .rounded; settings.font = Tokens.statusFont
-        settings.frame = NSRect(x: row.bounds.width - Tokens.inset - Tokens.bannerCloseWidth - Tokens.bannerGap - Tokens.bannerActionWidth,
+        settings.frame = NSRect(x: row.bounds.width - Tokens.bannerMargin - Tokens.bannerCloseWidth - Tokens.bannerGap - Tokens.bannerActionWidth,
                                 y: (Tokens.bannerHeight - Tokens.bannerControlHeight) / 2,
                                 width: Tokens.bannerActionWidth, height: Tokens.bannerControlHeight)
         settings.autoresizingMask = [.minXMargin]; row.addSubview(settings)
         let close = NSButton(title: "×", target: self, action: #selector(dismissBanner))
         close.bezelStyle = .circular
-        close.frame = NSRect(x: row.bounds.width - Tokens.inset - Tokens.bannerCloseWidth,
+        close.frame = NSRect(x: row.bounds.width - Tokens.bannerMargin - Tokens.bannerCloseWidth,
                              y: (Tokens.bannerHeight - Tokens.bannerControlHeight) / 2,
                              width: Tokens.bannerCloseWidth, height: Tokens.bannerControlHeight)
         close.autoresizingMask = [.minXMargin]; row.addSubview(close)
         host.addSubview(row); banner = row
     }
-    @objc private func dismissBanner() { bannerDismissed = true; banner?.removeFromSuperview(); banner = nil }
+    @objc private func dismissBanner() { bannerDismissed = true; banner?.removeFromSuperview(); banner = nil; (mapView?.superview as? PaneLayoutView)?.reservedBottomHeight = 0 }
     @objc private func openFullDiskAccess() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!) }
     private func refreshAppearance() {
         guard scanView != nil else { return }
@@ -1267,17 +1309,36 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         topIDs = tree.topFiles(limit: 100)
         let win = NSWindow(contentRect: NSRect(origin: .zero, size: NSSize(width: Tokens.startWidth, height: Tokens.windowSize.height * Tokens.topFraction)), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         win.title = "100 Largest Files"
+        win.appearance = window.appearance
+        win.minSize = Tokens.largestMinSize
         let scroll = NSScrollView(frame: win.contentView!.bounds); scroll.autoresizingMask = [.width, .height]; scroll.hasVerticalScroller = true
-        let table = NSTableView(frame: .zero); table.rowHeight = Tokens.rowHeight; table.dataSource = self; table.delegate = self
+        let table = NSTableView(frame: NSRect(origin: .zero, size: scroll.contentSize)); table.rowHeight = Tokens.rowHeight; table.dataSource = self; table.delegate = self
+        table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         for (name, width) in Tokens.largestColumns {
-            let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(name)); col.title = name; col.width = width; col.headerCell.font = Tokens.headerFont; table.addTableColumn(col)
+            let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(name)); col.title = name; col.width = width
+            if name == "Size" { col.minWidth = width; col.maxWidth = width }
+            let header = AlignedHeaderCell(textCell: name); header.font = Tokens.headerFont
+            header.alignment = name == "Size" ? .right : .left
+            header.leadingInset = name == "Path" ? Tokens.cellInset : 0
+            header.trailingInset = name == "Size" ? Tokens.cellInset : 0
+            col.headerCell = header
+            table.addTableColumn(col)
         }
         topTable = table; scroll.documentView = table; win.contentView?.addSubview(scroll)
+        table.reloadData()
         topWindow = win; win.makeKeyAndOrderFront(nil)
     }
 
     private func makeSnapshotIfNeeded() {
         #if DEBUG
+        if let snapshotTop100Path, tree != nil {
+            self.snapshotTop100Path = nil
+            showLargest()
+            if let topWindow {
+                DispatchQueue.main.async { DebugSnapshot.capture(window: topWindow, path: snapshotTop100Path, size: Tokens.largestSnapshotSize) }
+            }
+            return
+        }
         if let snapshotPath {
             self.snapshotPath = nil
             DebugSnapshot.capture(window: window, path: snapshotPath, size: snapshotMinWidth ? NSSize(width: Tokens.minWindowWidth, height: Tokens.windowSize.height) : nil)
@@ -1339,7 +1400,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             if let expectedPath { volumePaths = [expectedPath]; selectedVolume = 0; sendKey(36, "\r") }
             check("bug: sheet Scan keeps the same layout", startSheet == nil && isScanning && scanView === originalHost)
             check("bug: Return starts selected scan", isScanning && self.rootPath == expectedPath)
-            check("bug: progress does not cover scanning text", status.frame.maxX <= progress.frame.minX - Tokens.inset)
+            check("bug: progress does not cover scanning text", status.frame.maxX <= progress.frame.minX - Tokens.statusGap)
             progress.isIndeterminate = false; progress.doubleValue = 47
             check("bug: progress fill matches 47 percent", abs(progress.fillWidth - progress.bounds.width * 0.47) <= 2)
             if let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(Tokens.statusBarWidth), pixelsHigh: Int(Tokens.statusBarHeight), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0), let context = NSGraphicsContext(bitmapImageRep: rep) {
@@ -1352,7 +1413,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             let sizeColumn = outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("Size"))
             let cell = cellView(in: outline, key: "Size", right: true)
             let textFits = ("999.99 GB" as NSString).size(withAttributes: [.font: Tokens.numberFont]).width <= cell.textField!.bounds.width
-            check("bug: large Size fits with spinner", (sizeColumn?.width ?? 0) >= 110 && textFits && cell.subviews.contains(where: { $0 is NSProgressIndicator }))
+            check("bug: large Size fits with spinner", (sizeColumn?.width ?? 0) >= Tokens.treeColumns[1].1 && textFits && cell.subviews.contains(where: { $0 is NSProgressIndicator }))
             cancelScan()
             showStart()
             check("bug: reopen sheet after scan cancellation", startSheet != nil && window.attachedSheet === startSheet)
@@ -1471,6 +1532,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         await mapTask?.value
         check("tree types and map filled", tree.filesSeen >= 2 && outline.numberOfRows > 0 && types.numberOfRows > 0 && mapView.layoutData?.boxCount ?? 0 > 0)
         let parts = banner?.subviews ?? []
+        let statusCenters = [summary, estimateNote].filter { !$0.isHidden }.map { $0.frame.midY } + [pathBar.frame.midY]
+        let statusFitsInk = [summary, estimateNote].allSatisfy { $0.frame.height <= $0.fittingSize.height + 1 }
+        check("bug: status summary estimates and path share vertical center", !summary.isHidden && !pathBar.isHidden && statusFitsInk && (statusCenters.max() ?? 100) - (statusCenters.min() ?? 0) <= 1)
         let bannerCenters = parts.map { $0.frame.midY }
         let bannerInside = parts.allSatisfy { part in
             guard let frame = part.superview?.convert(part.frame, to: content) else { return false }
@@ -1481,6 +1545,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
                 && (parts.last?.frame.maxX ?? row.bounds.width) <= row.bounds.width - Tokens.inset
         } == true
         check("bug: banner text button and close share vertical center inside window", !tree.unreadablePaths.isEmpty && parts.count == 3 && (bannerCenters.max() ?? 100) - (bannerCenters.min() ?? 0) <= 1 && bannerInside && bannerMargins)
+        check("bug: banner reserves map space", banner != nil && mapView.frame.minY >= 0 && banner!.frame.maxY <= (mapView.superview?.convert(mapView.frame, to: scanView).minY ?? 0) + 1)
         check("bug: estimates label holds full limitation text", !estimateNote.isHidden && estimateNote.stringValue == "Some sizes are estimates" && estimateNote.toolTip?.contains("Some entries could not be read") == true)
         setPathItems(ids: [0], urls: [URL(fileURLWithPath: "/")], directories: [true])
         check("bug: volume root slash has one path item", pathBar.pathItems.count == 1 && pathBar.pathItems[0].url?.path == "/" && pathItemNodes[ObjectIdentifier(pathBar.pathItems[0])] == 0)
@@ -1577,6 +1642,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         check("bug: rapid zoom queues unbounded renders", pendingRender == nil && renderWork == nil && renderedRoot == 0)
         showLargest()
         check("Top 100 opens", topWindow != nil && !topIDs.isEmpty)
+        check("Top 100 rows and fixed Size width", topTable?.numberOfRows == topIDs.count && (topTable?.frame.height ?? 0) > Tokens.rowHeight && topTable?.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("Size"))?.width == Tokens.largestColumns[1].1)
         if let topTable, !topIDs.isEmpty {
             topTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
             check("Top 100 row selects main window", selectedNode == topIDs[0])

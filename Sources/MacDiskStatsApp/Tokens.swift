@@ -4,8 +4,10 @@ import DiskCore
 @MainActor enum Tokens {
     static let rowHeight: CGFloat = 22
     static let headerHeight: CGFloat = 26
-    static let statusHeight: CGFloat = 27
-    static let statusBarInset: CGFloat = 10
+    static let statusHeight: CGFloat = 28
+    static let statusLabelHeight: CGFloat = 14
+    static let statusMargin: CGFloat = 12
+    static let statusGap: CGFloat = 8
     static let statusBarWidth: CGFloat = 124
     static let minPathBarWidth: CGFloat = 200
     static let statusBarHeight: CGFloat = 7
@@ -23,10 +25,11 @@ import DiskCore
     static let liveMinimumBoxSide: CGFloat = 3
     static let liveGradientStart = CGPoint(x: 0.38, y: 0.37)
     static let liveGradientEnd = CGPoint(x: 0.95, y: 1)
-    static let bannerHeight: CGFloat = 27
+    static let bannerHeight: CGFloat = 32
     static let bannerControlHeight: CGFloat = 23
     static let bannerTextHeight: CGFloat = 18
     static let bannerGap: CGFloat = 8
+    static let bannerMargin: CGFloat = 12
     static let topFraction: CGFloat = 0.38
     static let treeFraction: CGFloat = 0.58
     static let splitThickness: CGFloat = 1
@@ -34,6 +37,11 @@ import DiskCore
     static let inset: CGFloat = 10
     static let cellInset: CGFloat = 7
     static let swatchSize: CGFloat = 11
+    static let fileIconSize: CGFloat = 16
+    static let iconTextGap: CGFloat = 8
+    static let treeHeaderIndent: CGFloat = 29
+    static let percentCellInset: CGFloat = 2
+    static let minTreeNameWidth: CGFloat = 160
     static let sizingSpinnerSize: CGFloat = 12
     static let mapFrameWidth: CGFloat = 2
     static let mapFrameInset: CGFloat = 1
@@ -51,15 +59,20 @@ import DiskCore
     static let sheetNoteTop: CGFloat = 83
     static let sheetIconSize: CGFloat = 28
     static let sheetBarHeight: CGFloat = 3
-    static let sheetBarWidth: CGFloat = 310
+    static let sheetBarWidth: CGFloat = 352
+    static let sheetNameWidth: CGFloat = 176
+    static let sheetCancelX: CGFloat = 258
+    static let sheetScanX: CGFloat = 352
     static let startRowHeight: CGFloat = 42
     static let startWidth: CGFloat = 620
     static let bannerTextFraction: CGFloat = 0.65
     static let bannerActionWidth: CGFloat = 126
-    static let bannerCloseWidth: CGFloat = 42
-    static let treeColumns: [(String, CGFloat)] = [("Name", 330), ("Size", 126), ("Frees", 112), ("%", 68)]
+    static let bannerCloseWidth: CGFloat = 24
+    static let treeColumns: [(String, CGFloat)] = [("Name", 330), ("Size", 104), ("Frees", 96), ("%", 60)]
     static let typeColumns: [(String, CGFloat)] = [("Type", 190), ("Size", 112), ("%", 68)]
-    static let largestColumns: [(String, CGFloat)] = [("Path", 480), ("Size", 120)]
+    static let largestColumns: [(String, CGFloat)] = [("Path", 480), ("Size", 104)]
+    static let largestMinSize = NSSize(width: 480, height: 240)
+    static let largestSnapshotSize = NSSize(width: 620, height: 360)
     static let startTopInset: CGFloat = 50
     static let paneMinRows: Int = 5
     static let statusSeparator = " · "
@@ -69,18 +82,18 @@ import DiskCore
     static let snapshotSize = NSSize(width: 1600, height: 1000)
     static let minTopHeight: CGFloat = 150
     static let minMapHeight: CGFloat = 190
-    static let minTreeWidth: CGFloat = 260
+    static let minTreeWidth: CGFloat = minTreeNameWidth + treeColumns.dropFirst().reduce(0) { $0 + $1.1 }
     static let minTypesWidth: CGFloat = 200
     static let minWindowWidth: CGFloat = 900
     static let estimateIcon = "ⓘ"
 
-    static let bodyFont = NSFont.systemFont(ofSize: 12.5)
-    static let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .medium)
-    static let headerFont = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+    static let bodyFont = NSFont.systemFont(ofSize: 13)
+    static let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+    static let headerFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
     static let statusFont = NSFont.systemFont(ofSize: 11.5)
-    static let startTitleFont = NSFont.systemFont(ofSize: 22, weight: .semibold)
+    static let startTitleFont = NSFont.systemFont(ofSize: 20, weight: .semibold)
     static let startDetailFont = NSFont.systemFont(ofSize: 13)
-    static let unreadableFont = NSFont.systemFont(ofSize: 12.5, weight: .regular).withTraits(.italicFontMask)
+    static let unreadableFont = NSFont.systemFont(ofSize: 13, weight: .regular).withTraits(.italicFontMask)
 
     static func background(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.12, alpha: 1) : .white }
     static func secondary(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.16, alpha: 1) : NSColor(calibratedWhite: 0.97, alpha: 1) }

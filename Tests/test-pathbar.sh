@@ -3,6 +3,8 @@ set -euo pipefail
 log=build/test-e2e.log
 for name in \
   'banner text button and close share vertical center inside window' \
+  'status summary estimates and path share vertical center' \
+  'banner reserves map space' \
   'estimates label holds full limitation text' \
   'path bar has one item per folder from scan root' \
   'path bar gives way to scan summary' \

@@ -19,10 +19,15 @@ for appearance in light dark; do
   test -s "$snapshot_dir/banner-path-$appearance.png"
   echo "banner path snapshot $appearance: $snapshot_dir/banner-path-$appearance.png"
 done
-MACDISKSTATS_SNAPSHOT_DIR="$snapshot_dir" build/MacDiskStats.app/Contents/MacOS/MacDiskStats --scan "$fixture" --select "$fixture/folder/inside/deep/selected-file.dat" --appearance light --snapshot-min-width --snapshot "$snapshot_dir/min-width-light.png"
-test -s "$snapshot_dir/min-width-light.png"
-test "$(sips -g pixelWidth "$snapshot_dir/min-width-light.png" | tail -n 1 | awk '{print $2}')" -le 1800
-echo "minimum width snapshot: $snapshot_dir/min-width-light.png"
+for appearance in light dark; do
+  MACDISKSTATS_SNAPSHOT_DIR="$snapshot_dir" build/MacDiskStats.app/Contents/MacOS/MacDiskStats --scan "$fixture" --select "$fixture/folder/inside/deep/selected-file.dat" --appearance "$appearance" --snapshot-min-width --snapshot "$snapshot_dir/min-width-$appearance.png"
+  test -s "$snapshot_dir/min-width-$appearance.png"
+  test "$(sips -g pixelWidth "$snapshot_dir/min-width-$appearance.png" | tail -n 1 | awk '{print $2}')" -le 1800
+  echo "minimum width snapshot $appearance: $snapshot_dir/min-width-$appearance.png"
+  MACDISKSTATS_SNAPSHOT_DIR="$snapshot_dir" build/MacDiskStats.app/Contents/MacOS/MacDiskStats --scan "$fixture" --appearance "$appearance" --snapshot-top100 "$snapshot_dir/top100-$appearance.png"
+  test -s "$snapshot_dir/top100-$appearance.png"
+  echo "Top 100 snapshot $appearance: $snapshot_dir/top100-$appearance.png"
+done
 for appearance in light dark; do
   MACDISKSTATS_SNAPSHOT_DIR="$snapshot_dir" build/MacDiskStats.app/Contents/MacOS/MacDiskStats --scan /Applications --appearance "$appearance" --snapshot-at-seconds 1 --snapshot "$snapshot_dir/live-$appearance.png"
   test -s "$snapshot_dir/live-$appearance.png"
