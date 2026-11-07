@@ -94,7 +94,23 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var snapshotAppearance: String?
     private var snapshotMinWidth = false
     private var volumeFreeBytes: Int64 = 0
-    private let folderIcon = NSWorkspace.shared.icon(for: .folder)
+    // The light-mode blue folder, drawn once, so dark mode shows the same icon.
+    private let folderIcon: NSImage = {
+        let source = NSWorkspace.shared.icon(for: .folder)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 128, pixelsHigh: 128, bitsPerSample: 8,
+                                         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0, bitsPerPixel: 0) else { return source }
+        NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            source.draw(in: NSRect(x: 0, y: 0, width: 128, height: 128))
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        rep.size = NSSize(width: 32, height: 32)
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+        return image
+    }()
     private let fileIcon = NSImage(systemSymbolName: "doc", accessibilityDescription: nil)
     private let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
