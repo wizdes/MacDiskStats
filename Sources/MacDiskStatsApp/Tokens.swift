@@ -8,6 +8,8 @@ import DiskCore
     static let statusBarInset: CGFloat = 10
     static let statusBarWidth: CGFloat = 124
     static let statusBarHeight: CGFloat = 7
+    static let pathBarVerticalInset: CGFloat = 1
+    static let summaryMaxFraction: CGFloat = 0.49
     static let liveBoxRadius: CGFloat = 3
     static let liveBoxGap: CGFloat = 0
     static let liveCushionHighlight: CGFloat = 0.22
@@ -21,6 +23,9 @@ import DiskCore
     static let liveGradientStart = CGPoint(x: 0.38, y: 0.37)
     static let liveGradientEnd = CGPoint(x: 0.95, y: 1)
     static let bannerHeight: CGFloat = 27
+    static let bannerControlHeight: CGFloat = 23
+    static let bannerTextHeight: CGFloat = 18
+    static let bannerGap: CGFloat = 8
     static let topFraction: CGFloat = 0.38
     static let treeFraction: CGFloat = 0.58
     static let splitThickness: CGFloat = 1
@@ -39,6 +44,10 @@ import DiskCore
     static let sheetButtonHeight: CGFloat = 32
     static let sheetListTop: CGFloat = 226
     static let sheetListHeight: CGFloat = 158
+    static let sheetVisibleRows = 5
+    static func sheetHeight(rows: Int) -> CGFloat { 163 + CGFloat(max(1, min(rows, sheetVisibleRows))) * sheetRowHeight }
+    static let sheetTitleTop: CGFloat = 57
+    static let sheetNoteTop: CGFloat = 83
     static let sheetIconSize: CGFloat = 28
     static let sheetBarHeight: CGFloat = 3
     static let sheetBarWidth: CGFloat = 310

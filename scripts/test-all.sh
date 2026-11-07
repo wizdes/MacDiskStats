@@ -38,6 +38,7 @@ if (( fail == 0 )); then
   if ! rg -q '^checks [1-9][0-9]*, failed 0$' build/test-unit.log; then record 'unit count present and zero failed' 1; fi
   fixture=$(mktemp -d "${TMPDIR}mds-e2e.XXXXXX")
   mkdir -p "$fixture/nested"
+  mkdir -p "$fixture/unreadable"; chmod 000 "$fixture/unreadable"
   dd if=/dev/zero of="$fixture/large.txt" bs=4096 count=8 2>/dev/null
   dd if=/dev/zero of="$fixture/nested/other.png" bs=4096 count=4 2>/dev/null
   mkdir -p "$fixture/nested/dir10000"
@@ -54,12 +55,15 @@ if (( fail == 0 )); then
   rm "$fixture/delete-me.txt"
   wait $appPID
   e2eExit=$?
+  chmod 700 "$fixture/unreadable"
   cat build/test-e2e.log
   e2ePass=$(rg -c '^PASS e2e:' build/test-e2e.log || true)
   e2eFail=$(rg -c '^FAIL e2e:' build/test-e2e.log || true)
   (( pass += ${e2ePass:-0}, fail += ${e2eFail:-0} ))
   if rg -q '^SKIP ' build/test-e2e.log; then record 'e2e has no skipped checks' 1; fi
   if (( e2eExit != 0 || ${e2ePass:-0} == 0 )) || ! rg -q '^e2e [1-9][0-9]* passed, 0 failed$' build/test-e2e.log; then record 'e2e completed with count and zero failed' 1; fi
+  Tests/test-pathbar.sh > build/test-pathbar-assertions.log 2>&1
+  record 'banner and path bar regressions' $?
   rm -r "$fixture"
 fi
 scripts/check-readonly.sh > build/test-source-readonly.log 2>&1
