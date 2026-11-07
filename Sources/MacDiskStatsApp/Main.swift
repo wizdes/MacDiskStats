@@ -1413,7 +1413,8 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             let sizeColumn = outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("Size"))
             let cell = cellView(in: outline, key: "Size", right: true)
             let textFits = ("999.99 GB" as NSString).size(withAttributes: [.font: Tokens.numberFont]).width <= cell.textField!.bounds.width
-            check("bug: large Size fits with spinner", (sizeColumn?.width ?? 0) >= Tokens.treeColumns[1].1 && textFits && cell.subviews.contains(where: { $0 is NSProgressIndicator }))
+            // Fixed minimum on purpose (user decision 2026-11-07): it must fail if the Size column is narrowed.
+            check("bug: large Size fits with spinner", (sizeColumn?.width ?? 0) >= 104 && textFits && cell.subviews.contains(where: { $0 is NSProgressIndicator }))
             cancelScan()
             showStart()
             check("bug: reopen sheet after scan cancellation", startSheet != nil && window.attachedSheet === startSheet)
