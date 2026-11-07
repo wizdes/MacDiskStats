@@ -7,6 +7,7 @@ import DiskCore
     static let statusHeight: CGFloat = 27
     static let statusBarInset: CGFloat = 10
     static let statusBarWidth: CGFloat = 124
+    static let minPathBarWidth: CGFloat = 200
     static let statusBarHeight: CGFloat = 7
     static let pathBarVerticalInset: CGFloat = 1
     static let summaryMaxFraction: CGFloat = 0.49
@@ -56,8 +57,8 @@ import DiskCore
     static let bannerTextFraction: CGFloat = 0.65
     static let bannerActionWidth: CGFloat = 126
     static let bannerCloseWidth: CGFloat = 42
-    static let treeColumns: [(String, CGFloat)] = [("Name", 330), ("Size", 126), ("Frees", 112), ("%", 56)]
-    static let typeColumns: [(String, CGFloat)] = [("Type", 190), ("Size", 112), ("%", 56)]
+    static let treeColumns: [(String, CGFloat)] = [("Name", 330), ("Size", 126), ("Frees", 112), ("%", 68)]
+    static let typeColumns: [(String, CGFloat)] = [("Type", 190), ("Size", 112), ("%", 68)]
     static let largestColumns: [(String, CGFloat)] = [("Path", 480), ("Size", 120)]
     static let startTopInset: CGFloat = 50
     static let paneMinRows: Int = 5
@@ -70,6 +71,8 @@ import DiskCore
     static let minMapHeight: CGFloat = 190
     static let minTreeWidth: CGFloat = 260
     static let minTypesWidth: CGFloat = 200
+    static let minWindowWidth: CGFloat = 900
+    static let estimateIcon = "ⓘ"
 
     static let bodyFont = NSFont.systemFont(ofSize: 12.5)
     static let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .medium)

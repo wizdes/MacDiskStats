@@ -2,7 +2,7 @@
 import AppKit
 
 @MainActor enum DebugSnapshot {
-    static func capture(window: NSWindow, path: String, sheet: NSWindow? = nil) {
+    static func capture(window: NSWindow, path: String, sheet: NSWindow? = nil, size: NSSize? = nil) {
         let container = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Containers/dev.yili.MacDiskStats/Data/Library/Application Support", isDirectory: true)
         let allowed = ProcessInfo.processInfo.environment["MACDISKSTATS_SNAPSHOT_DIR"] ?? container.path
@@ -12,7 +12,7 @@ import AppKit
             NSApp.terminate(nil)
             return
         }
-        window.setContentSize(Tokens.snapshotSize)
+        window.setContentSize(size ?? Tokens.snapshotSize)
         window.contentView?.layoutSubtreeIfNeeded()
         guard let view = window.contentView else { NSApp.terminate(nil); return }
         let rect = view.bounds

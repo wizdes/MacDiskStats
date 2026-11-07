@@ -12,4 +12,22 @@ for name in \
   'shared file check error stays visible'; do
   rg -q "^PASS e2e: bug: $name$" "$log"
 done
+for name in \
+  'live path bar follows node ids' \
+  'phase two path bar keeps node ids' \
+  'path control refuses outside root drops' \
+  'percent cells fit 100 percent' \
+  'unreadable appears only in Size column' \
+  'path items have direct node identity' \
+  'path items use file and folder icons' \
+  'symlink path keeps its node identity' \
+  'colliding display names keep distinct ids' \
+  'volume root slash has one path item' \
+  'unreadable banner clears on new scan' \
+  'Cmd-N during scan opens one sheet' \
+  'Escape from sheet does not cancel scan' \
+  'light status labels follow appearance' \
+  'dark status labels follow appearance'; do
+  rg -q "^PASS e2e: bug: $name$" "$log"
+done
 if rg -q '^FAIL e2e:|^SKIP ' "$log"; then exit 1; fi

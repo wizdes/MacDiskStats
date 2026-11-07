@@ -41,6 +41,7 @@ if (( fail == 0 )); then
   mkdir -p "$fixture/unreadable"; chmod 000 "$fixture/unreadable"
   dd if=/dev/zero of="$fixture/large.txt" bs=4096 count=8 2>/dev/null
   dd if=/dev/zero of="$fixture/nested/other.png" bs=4096 count=4 2>/dev/null
+  ln -s other.png "$fixture/nested/link-to-other"
   mkdir -p "$fixture/nested/dir10000"
   for ((late=0; late<20; late++)); do dd if=/dev/zero of="$fixture/nested/dir10000/late-$late.png" bs=4096 count=1 2>/dev/null; done
   dd if=/dev/zero of="$fixture/delete-me.txt" bs=4096 count=1 2>/dev/null
