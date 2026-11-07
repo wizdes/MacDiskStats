@@ -1,3 +1,5 @@
+<img src="docs/icon-256.png" width="128" height="128" alt="MacDiskStats icon: an open hard drive with a magnifying glass over a map of colored blocks">
+
 # MacDiskStats
 
 MacDiskStats is a free, strictly read-only disk map for macOS, built as a modern WinDirStat for the Mac. It shows a folder tree, file types, and a cushion treemap of disk use. Select a folder or box to see where space went. You can reveal a file in Finder, copy its path, or use Quick Look. To remove a file, delete it in Finder and then choose Rescan in MacDiskStats.
