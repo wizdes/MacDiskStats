@@ -11,6 +11,16 @@ import UniformTypeIdentifiers
     }
 }
 
+@MainActor private final class AlignedHeaderCell: NSTableHeaderCell {
+    var leadingInset: CGFloat = 0
+    var trailingInset: CGFloat = 0
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        let frame = NSRect(x: cellFrame.minX + leadingInset, y: cellFrame.minY,
+                           width: max(0, cellFrame.width - leadingInset - trailingInset), height: cellFrame.height)
+        super.drawInterior(withFrame: frame, in: controlView)
+    }
+}
+
 private struct MapRenderRequest: Sendable {
     let tree: FileTree
     let root: Int32
@@ -93,6 +103,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var snapshotPath: String?
     private var snapshotAppearance: String?
     private var snapshotMinWidth = false
+    private var snapshotTop100Path: String?
     private var volumeFreeBytes: Int64 = 0
     // The light-mode blue folder, drawn once, so dark mode shows the same icon.
     private let folderIcon: NSImage = {
@@ -194,6 +205,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             if args[i] == "--snapshot-mid-scan", i + 1 < args.count { snapshotMidPath = args[i + 1]; continue }
             if args[i] == "--snapshot-start", i + 1 < args.count { snapshotStartPath = args[i + 1]; continue }
             if args[i] == "--snapshot-min-width" { snapshotMinWidth = true; continue }
+            if args[i] == "--snapshot-top100", i + 1 < args.count { snapshotTop100Path = args[i + 1]; continue }
             if args[i] == "--measure" { measurePending = true; continue }
             if args[i] == "--measure-live" { measureLive = true; continue }
             if args[i] == "--e2e", i + 1 < args.count { e2eScript = args[i + 1]; continue }
@@ -269,7 +281,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             let icon = NSImageView(frame: NSRect(x: 8, y: 8, width: Tokens.sheetIconSize, height: Tokens.sheetIconSize))
             icon.image = volumeIcon(for: url.path, scale: sheet.backingScaleFactor); row.addSubview(icon)
             let nameLabel = label(name, font: Tokens.bodyFont, color: Tokens.text(dark))
-            nameLabel.frame = NSRect(x: 46, y: 4, width: 190, height: 17); row.addSubview(nameLabel)
+            nameLabel.frame = NSRect(x: 46, y: 4, width: Tokens.sheetNameWidth, height: 17); row.addSubview(nameLabel)
             let sizeLabel = label(total > 0 ? "\(format(used)) of \(format(total))" : "Size unavailable", font: Tokens.statusFont, color: Tokens.muted(dark))
             sizeLabel.alignment = .right; sizeLabel.frame = NSRect(x: 230, y: 4, width: 168, height: 17); row.addSubview(sizeLabel)
             let bar = NSView(frame: NSRect(x: 46, y: 34, width: Tokens.sheetBarWidth, height: Tokens.sheetBarHeight))
@@ -283,9 +295,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         choose.bezelStyle = .rounded; choose.font = Tokens.bodyFont
         choose.frame = NSRect(x: Tokens.sheetPadding, y: 20, width: 135, height: Tokens.sheetButtonHeight); host.addSubview(choose)
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(closeStartSheet))
-        cancel.bezelStyle = .rounded; cancel.frame = NSRect(x: 257, y: 20, width: Tokens.sheetButtonWidth, height: Tokens.sheetButtonHeight); host.addSubview(cancel)
+        cancel.bezelStyle = .rounded; cancel.frame = NSRect(x: Tokens.sheetCancelX, y: 20, width: Tokens.sheetButtonWidth, height: Tokens.sheetButtonHeight); host.addSubview(cancel)
         let scan = NSButton(title: "Scan", target: self, action: #selector(scanSelectedVolume))
-        scan.bezelStyle = .rounded; scan.keyEquivalent = "\r"; scan.frame = NSRect(x: 350, y: 20, width: Tokens.sheetButtonWidth, height: Tokens.sheetButtonHeight); host.addSubview(scan)
+        scan.bezelStyle = .rounded; scan.keyEquivalent = "\r"; scan.frame = NSRect(x: Tokens.sheetScanX, y: 20, width: Tokens.sheetButtonWidth, height: Tokens.sheetButtonHeight); host.addSubview(scan)
         startSheet = sheet; updateVolumeSelection()
         window.beginSheet(sheet)
         sheet.defaultButtonCell = scan.cell as? NSButtonCell
@@ -346,7 +358,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let host = NSView(frame: content.bounds); host.autoresizingMask = [.width, .height]
         content.addSubview(host); scanView = host
         let status = label("", font: Tokens.statusFont, color: Tokens.muted(dark))
-        status.frame = NSRect(x: Tokens.inset, y: 0, width: host.bounds.width - Tokens.inset * 2, height: Tokens.statusHeight)
+        status.frame = NSRect(x: Tokens.statusMargin, y: (Tokens.statusHeight - Tokens.statusLabelHeight) / 2, width: host.bounds.width - Tokens.statusMargin * 2, height: Tokens.statusLabelHeight)
         status.autoresizingMask = [.width, .maxYMargin]; status.alignment = .center
         host.addSubview(status); self.status = status
         let map = MapView(frame: .zero); mapView = map
@@ -368,6 +380,12 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             if name == "%" { c.minWidth = width }
             c.headerCell.font = Tokens.headerFont
             if name != "Name" { c.headerCell.alignment = .right }
+            let header = AlignedHeaderCell(textCell: name)
+            header.font = Tokens.headerFont
+            header.alignment = name == "Name" ? .left : .right
+            header.leadingInset = name == "Name" ? Tokens.treeHeaderIndent : 0
+            header.trailingInset = name == "%" ? 2 : (name == "Name" ? 0 : Tokens.cellInset)
+            c.headerCell = header
             if name == "Frees" { outline.headerView?.toolTip = "At least this much space comes back if you delete this." }
             outline.addTableColumn(c)
         }
@@ -383,6 +401,12 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             if name == "%" { c.minWidth = width }
             c.headerCell.font = Tokens.headerFont
             if name != "Type" { c.headerCell.alignment = .right }
+            let header = AlignedHeaderCell(textCell: name)
+            header.font = Tokens.headerFont
+            header.alignment = name == "Type" ? .left : .right
+            header.leadingInset = name == "Type" ? Tokens.cellInset + Tokens.swatchSize + Tokens.iconTextGap : 0
+            header.trailingInset = name == "%" ? 2 : (name == "Type" ? 0 : Tokens.cellInset)
+            c.headerCell = header
             types.addTableColumn(c)
         }
         typeScroll.documentView = types
@@ -390,11 +414,11 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         panes.autoresizingMask = [.width, .height]
         host.addSubview(panes)
         panes.layoutSubtreeIfNeeded()
-        progress = StatusProgressView(frame: NSRect(x: Tokens.inset, y: Tokens.statusBarInset, width: Tokens.statusBarWidth, height: Tokens.statusBarHeight))
+        progress = StatusProgressView(frame: NSRect(x: Tokens.statusMargin, y: (Tokens.statusHeight - Tokens.statusBarHeight) / 2, width: Tokens.statusBarWidth, height: Tokens.statusBarHeight))
         progress.style = .bar; progress.minValue = 0; progress.maxValue = 100; progress.isIndeterminate = true; progress.startAnimation(nil)
         progress.autoresizingMask = [.maxYMargin]; host.addSubview(progress)
-        status.frame.origin.x = Tokens.inset + Tokens.statusBarWidth + Tokens.inset
-        status.frame.size.width = host.bounds.width - status.frame.origin.x - Tokens.inset
+        status.frame.origin.x = Tokens.statusMargin + Tokens.statusBarWidth + Tokens.statusGap
+        status.frame.size.width = host.bounds.width - status.frame.origin.x - Tokens.statusMargin
         let pathBar = NSPathControl(frame: .zero)
         pathBar.pathStyle = .standard
         pathBar.isEditable = false
@@ -997,7 +1021,8 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         label.alignment = right ? .right : .left
         label.lineBreakMode = .byTruncatingMiddle
         let hasImage = key == "Name" || key == "Type"
-        let leading = key == "%" ? CGFloat(2) : Tokens.cellInset + (hasImage ? Tokens.swatchSize + Tokens.cellInset : 0)
+        let iconSize = key == "Name" ? Tokens.fileIconSize : Tokens.swatchSize
+        let leading = key == "%" ? CGFloat(2) : Tokens.cellInset + (hasImage ? iconSize + Tokens.iconTextGap : 0)
         let trailing = key == "%" ? CGFloat(2) : Tokens.cellInset
         label.frame = NSRect(x: leading, y: 2, width: max(0, columnWidth - leading - trailing), height: Tokens.rowHeight - 4)
         label.autoresizingMask = .width
@@ -1009,7 +1034,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             cell.addSubview(spinner)
         }
         if hasImage {
-            let image = NSImageView(frame: NSRect(x: Tokens.cellInset, y: (Tokens.rowHeight - Tokens.swatchSize) / 2, width: Tokens.swatchSize, height: Tokens.swatchSize))
+            let image = NSImageView(frame: NSRect(x: Tokens.cellInset, y: (Tokens.rowHeight - iconSize) / 2, width: iconSize, height: iconSize))
             cell.addSubview(image); cell.imageView = image
         }
         return cell
@@ -1471,6 +1496,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         await mapTask?.value
         check("tree types and map filled", tree.filesSeen >= 2 && outline.numberOfRows > 0 && types.numberOfRows > 0 && mapView.layoutData?.boxCount ?? 0 > 0)
         let parts = banner?.subviews ?? []
+        let statusCenters = [summary, estimateNote].filter { !$0.isHidden }.map { $0.frame.midY } + [pathBar.frame.midY]
+        let statusFitsInk = [summary, estimateNote].allSatisfy { $0.frame.height <= $0.fittingSize.height + 1 }
+        check("bug: status summary estimates and path share vertical center", !summary.isHidden && !pathBar.isHidden && statusFitsInk && (statusCenters.max() ?? 100) - (statusCenters.min() ?? 0) <= 1)
         let bannerCenters = parts.map { $0.frame.midY }
         let bannerInside = parts.allSatisfy { part in
             guard let frame = part.superview?.convert(part.frame, to: content) else { return false }
@@ -1481,6 +1509,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
                 && (parts.last?.frame.maxX ?? row.bounds.width) <= row.bounds.width - Tokens.inset
         } == true
         check("bug: banner text button and close share vertical center inside window", !tree.unreadablePaths.isEmpty && parts.count == 3 && (bannerCenters.max() ?? 100) - (bannerCenters.min() ?? 0) <= 1 && bannerInside && bannerMargins)
+        check("bug: banner reserves map space", banner != nil && mapView.frame.minY >= 0 && banner!.frame.maxY <= (mapView.superview?.convert(mapView.frame, to: scanView).minY ?? 0) + 1)
         check("bug: estimates label holds full limitation text", !estimateNote.isHidden && estimateNote.stringValue == "Some sizes are estimates" && estimateNote.toolTip?.contains("Some entries could not be read") == true)
         setPathItems(ids: [0], urls: [URL(fileURLWithPath: "/")], directories: [true])
         check("bug: volume root slash has one path item", pathBar.pathItems.count == 1 && pathBar.pathItems[0].url?.path == "/" && pathItemNodes[ObjectIdentifier(pathBar.pathItems[0])] == 0)
