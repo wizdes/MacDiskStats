@@ -23,7 +23,13 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var outline: NSOutlineView!
     private var types: NSTableView!
     private var status: NSTextField!
-    private var progress: NSProgressIndicator!
+    private var progress: StatusProgressView!
+    private var startSheet: NSWindow?
+    private var volumePaths: [String] = []
+    private var selectedVolume = 0
+    private var snapshotStartPath: String?
+    private var snapshotMidPath: String?
+    private var snapshotMidRow = false
     private var banner: NSView?
     private var tree: FileTree?
     private var liveScan: LiveScan?
@@ -94,6 +100,8 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         NSApp.setActivationPolicy(.regular)
         buildMenu()
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53, self?.startSheet != nil { self?.closeStartSheet(); return nil }
+            if self?.startSheet != nil, event.keyCode == 125 || event.keyCode == 126 { self?.moveVolumeSelection(event.keyCode == 125 ? 1 : -1); return nil }
             if event.keyCode == 53, self?.isScanning == true { self?.cancelScan(); return nil }
             if event.modifierFlags.contains(.command) && event.keyCode == 126 { self?.zoomOut(); return nil }
             if event.modifierFlags.contains(.command) && event.keyCode == 36 { self?.zoomIn(); return nil }
@@ -108,7 +116,9 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         window.delegate = self
         window.contentView = content
         if let snapshotAppearance { window.appearance = NSAppearance(named: snapshotAppearance == "dark" ? .darkAqua : .aqua) }
-        showStart()
+        buildScanView()
+        status.stringValue = "No scan yet"
+        progress.isHidden = true
         #if DEBUG
         if let e2eScript {
             Task { await runE2E(e2eScript) }
@@ -116,6 +126,18 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         #endif
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        #if DEBUG
+        if let snapshotMidPath {
+            self.snapshotMidPath = nil
+            snapshotMidRow = true
+            outline.reloadData()
+            progress.isHidden = false; progress.isIndeterminate = false; progress.doubleValue = 47
+            status.stringValue = "Scanning… 47%"
+            DispatchQueue.main.async { DebugSnapshot.capture(window: self.window, path: snapshotMidPath) }
+        } else if rootPath == nil || e2eScript != nil { showStart() }
+        #else
+        if rootPath == nil { showStart() }
+        #endif
         if let rootPath {
             #if DEBUG
             if e2eScript == nil { startScan(rootPath) }
@@ -133,6 +155,8 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let args = CommandLine.arguments
         for i in args.indices {
             #if DEBUG
+            if args[i] == "--snapshot-mid-scan", i + 1 < args.count { snapshotMidPath = args[i + 1]; continue }
+            if args[i] == "--snapshot-start", i + 1 < args.count { snapshotStartPath = args[i + 1]; continue }
             if args[i] == "--measure" { measurePending = true; continue }
             if args[i] == "--measure-live" { measureLive = true; continue }
             if args[i] == "--e2e", i + 1 < args.count { e2eScript = args[i + 1]; continue }
@@ -155,6 +179,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         appMenu.addItem(withTitle: "Quit MacDiskStats", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         app.submenu = appMenu; bar.addItem(app)
         let file = NSMenuItem(); let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(withTitle: "New Scan", action: #selector(showStart), keyEquivalent: "n").target = self
         fileMenu.addItem(withTitle: "Choose Folder…", action: #selector(chooseFolder), keyEquivalent: "o").target = self
         fileMenu.addItem(withTitle: "Rescan", action: #selector(rescan), keyEquivalent: "R").target = self
         fileMenu.addItem(withTitle: "Rescan Folder", action: #selector(rescanFolder), keyEquivalent: "") .target = self
@@ -173,45 +198,100 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         NSApp.mainMenu = bar
     }
 
-    private func showStart() {
-        scanView?.removeFromSuperview(); scanView = nil
-        startView?.removeFromSuperview()
-        let view = NSView(frame: content.bounds); view.autoresizingMask = [.width, .height]
-        view.wantsLayer = true; view.layer?.backgroundColor = Tokens.background(dark).cgColor
-        content.addSubview(view); startView = view
-        let title = label("Choose a disk to scan", font: Tokens.startTitleFont, color: Tokens.text(dark))
-        title.frame = NSRect(x: Tokens.inset, y: view.bounds.height - Tokens.startTopInset, width: Tokens.startWidth, height: Tokens.startSpacing * 2)
-        title.autoresizingMask = [.minYMargin]; view.addSubview(title)
-        let note = label("MacDiskStats reads file names and sizes. It never changes your files.", font: Tokens.startDetailFont, color: Tokens.muted(dark))
-        note.frame = NSRect(x: Tokens.inset, y: title.frame.minY - Tokens.startSpacing * 2, width: Tokens.startWidth, height: Tokens.startSpacing * 2)
-        note.autoresizingMask = [.minYMargin]; view.addSubview(note)
-        let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey], options: [.skipHiddenVolumes]) ?? []
-        var y = note.frame.minY - Tokens.startSpacing - Tokens.startRowHeight
-        for url in volumes {
+    @objc private func showStart() {
+        guard startSheet == nil else { return }
+        let sheet = NSWindow(contentRect: NSRect(origin: .zero, size: Tokens.sheetSize), styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.title = ""
+        sheet.appearance = window.appearance
+        let host = NSView(frame: NSRect(origin: .zero, size: Tokens.sheetSize))
+        host.wantsLayer = true; host.layer?.backgroundColor = Tokens.secondary(dark).cgColor
+        sheet.contentView = host
+        let title = label("Scan a disk", font: Tokens.startTitleFont, color: Tokens.text(dark))
+        title.frame = NSRect(x: Tokens.sheetPadding, y: 263, width: 400, height: 30); host.addSubview(title)
+        let note = label("MacDiskStats reads names and sizes only. It never changes your files.", font: Tokens.statusFont, color: Tokens.muted(dark))
+        note.frame = NSRect(x: Tokens.sheetPadding, y: 237, width: 410, height: 19); host.addSubview(note)
+        let list = NSScrollView(frame: NSRect(x: Tokens.sheetPadding, y: 69, width: Tokens.sheetSize.width - 2 * Tokens.sheetPadding, height: Tokens.sheetListHeight))
+        list.hasVerticalScroller = true; list.autohidesScrollers = true; list.drawsBackground = false
+        let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey], options: [.skipHiddenVolumes]) ?? []
+        let volumes = urls.sorted { a, b in a.path == "/" ? true : (b.path == "/" ? false : a.path < b.path) }
+        volumePaths = volumes.map(\.path); selectedVolume = 0
+        let document = NSView(frame: NSRect(x: 0, y: 0, width: list.bounds.width, height: max(list.bounds.height, CGFloat(volumes.count) * Tokens.sheetRowHeight)))
+        for (index, url) in volumes.enumerated() {
             let values = try? url.resourceValues(forKeys: [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey])
             let name = values?.volumeName ?? url.lastPathComponent
-            let detail: String
-            if let total = values?.volumeTotalCapacity, let free = values?.volumeAvailableCapacity {
-                detail = "\(format(max(0, Int64(total - free)))) used · \(format(Int64(free))) free"
-            } else { detail = "size unavailable" }
-            let button = NSButton(title: "\(name)   \(detail)", target: self, action: #selector(startVolume(_:)))
-            button.bezelStyle = .rounded; button.alignment = .left; button.font = Tokens.bodyFont
-            button.identifier = NSUserInterfaceItemIdentifier(url.path)
-            button.frame = NSRect(x: Tokens.inset, y: y, width: Tokens.startWidth, height: Tokens.startRowHeight)
-            button.autoresizingMask = [.minYMargin]; view.addSubview(button)
-            y -= Tokens.startRowHeight + Tokens.startSpacing
+            let total = max(0, Int64(values?.volumeTotalCapacity ?? 0))
+            let used = max(0, total - Int64(values?.volumeAvailableCapacity ?? 0))
+            let row = NSButton(title: "", target: self, action: #selector(selectVolume(_:)))
+            row.identifier = NSUserInterfaceItemIdentifier(url.path); row.tag = index
+            row.isBordered = false; row.frame = NSRect(x: 0, y: document.bounds.height - CGFloat(index + 1) * Tokens.sheetRowHeight, width: document.bounds.width, height: Tokens.sheetRowHeight)
+            row.wantsLayer = true
+            row.setAccessibilityLabel("\(name), \(format(used)) used of \(format(total)) total")
+            row.setAccessibilityRole(.button)
+            let icon = NSImageView(frame: NSRect(x: 8, y: 8, width: Tokens.sheetIconSize, height: Tokens.sheetIconSize))
+            icon.image = NSWorkspace.shared.icon(forFile: url.path); row.addSubview(icon)
+            let nameLabel = label(name, font: Tokens.bodyFont, color: Tokens.text(dark))
+            nameLabel.frame = NSRect(x: 46, y: 4, width: 190, height: 17); row.addSubview(nameLabel)
+            let sizeLabel = label(total > 0 ? "\(format(used)) of \(format(total))" : "Size unavailable", font: Tokens.statusFont, color: Tokens.muted(dark))
+            sizeLabel.alignment = .right; sizeLabel.frame = NSRect(x: 230, y: 4, width: 168, height: 17); row.addSubview(sizeLabel)
+            let bar = NSView(frame: NSRect(x: 46, y: 34, width: Tokens.sheetBarWidth, height: Tokens.sheetBarHeight))
+            bar.wantsLayer = true; bar.layer?.backgroundColor = Tokens.progressTrack(dark).cgColor; bar.layer?.cornerRadius = Tokens.sheetBarHeight / 2; row.addSubview(bar)
+            let fill = NSView(frame: NSRect(x: 0, y: 0, width: Tokens.sheetBarWidth * CGFloat(Double(used) / Double(max(1, total))), height: Tokens.sheetBarHeight))
+            fill.wantsLayer = true; fill.layer?.backgroundColor = Tokens.progressFill(dark).cgColor; fill.layer?.cornerRadius = Tokens.sheetBarHeight / 2; bar.addSubview(fill)
+            document.addSubview(row)
         }
+        list.documentView = document; host.addSubview(list); startView = document
         let choose = NSButton(title: "Choose Folder…", target: self, action: #selector(chooseFolder))
         choose.bezelStyle = .rounded; choose.font = Tokens.bodyFont
-        choose.frame = NSRect(x: Tokens.inset, y: y, width: Tokens.startWidth, height: Tokens.startRowHeight)
-        choose.autoresizingMask = [.minYMargin]; view.addSubview(choose)
+        choose.frame = NSRect(x: Tokens.sheetPadding, y: 20, width: 135, height: Tokens.sheetButtonHeight); host.addSubview(choose)
+        let cancel = NSButton(title: "Cancel", target: self, action: #selector(closeStartSheet))
+        cancel.bezelStyle = .rounded; cancel.frame = NSRect(x: 257, y: 20, width: Tokens.sheetButtonWidth, height: Tokens.sheetButtonHeight); host.addSubview(cancel)
+        let scan = NSButton(title: "Scan", target: self, action: #selector(scanSelectedVolume))
+        scan.bezelStyle = .rounded; scan.keyEquivalent = "\r"; scan.frame = NSRect(x: 350, y: 20, width: Tokens.sheetButtonWidth, height: Tokens.sheetButtonHeight); host.addSubview(scan)
+        startSheet = sheet; updateVolumeSelection()
+        window.beginSheet(sheet)
+        sheet.makeFirstResponder(volumes.isEmpty ? choose : document.subviews.first)
+        #if DEBUG
+        if let snapshotStartPath {
+            self.snapshotStartPath = nil
+            DispatchQueue.main.async { DebugSnapshot.capture(window: self.window, path: snapshotStartPath, sheet: sheet) }
+        }
+        #endif
     }
-    @objc private func startVolume(_ sender: NSButton) { if let path = sender.identifier?.rawValue { startScan(path) } }
+    private func updateVolumeSelection() {
+        for row in startView?.subviews.compactMap({ $0 as? NSButton }) ?? [] {
+            row.layer?.backgroundColor = row.tag == selectedVolume ? Tokens.sheetSelection(dark).cgColor : NSColor.clear.cgColor
+            row.layer?.cornerRadius = 6
+        }
+    }
+    private func moveVolumeSelection(_ delta: Int) {
+        guard !volumePaths.isEmpty else { return }
+        selectedVolume = min(max(0, selectedVolume + delta), volumePaths.count - 1)
+        updateVolumeSelection()
+        if let row = startView?.subviews.compactMap({ $0 as? NSButton }).first(where: { $0.tag == selectedVolume }) {
+            row.scrollToVisible(row.bounds)
+            startSheet?.makeFirstResponder(row)
+        }
+    }
+    @objc private func selectVolume(_ sender: NSButton) {
+        selectedVolume = sender.tag; updateVolumeSelection()
+        if NSApp.currentEvent?.clickCount ?? 0 > 1 { scanSelectedVolume() }
+    }
+    @objc private func closeStartSheet() {
+        guard let sheet = startSheet else { return }
+        window.endSheet(sheet); sheet.orderOut(nil); startSheet = nil; startView = nil
+    }
+    @objc private func scanSelectedVolume() {
+        guard volumePaths.indices.contains(selectedVolume) else { return }
+        let path = volumePaths[selectedVolume]
+        closeStartSheet(); startScan(path)
+    }
     @objc private func chooseFolder() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
-        panel.begin { [weak self] response in
-            guard response == .OK, let path = panel.url?.path else { return }
-            self?.startScan(path)
+        if let sheet = startSheet { window.endSheet(sheet); sheet.orderOut(nil); startSheet = nil; startView = nil }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            if response == .OK, let path = panel.url?.path { self.startScan(path) }
+            else if self.tree == nil && !self.isScanning { self.status.stringValue = "No scan yet" }
         }
     }
 
@@ -222,8 +302,7 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             if measureLive { print(String(format: "measure live build scan view %.1f ms", Date().timeIntervalSince(buildStarted) * 1000)) }
             #endif
         }
-        startView?.removeFromSuperview(); startView = nil
-        scanView?.removeFromSuperview()
+        guard scanView == nil else { return }
         let host = NSView(frame: content.bounds); host.autoresizingMask = [.width, .height]
         content.addSubview(host); scanView = host
         let status = label("", font: Tokens.statusFont, color: Tokens.muted(dark))
@@ -269,8 +348,8 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         panes.autoresizingMask = [.width, .height]
         host.addSubview(panes)
         panes.layoutSubtreeIfNeeded()
-        progress = NSProgressIndicator(frame: NSRect(x: Tokens.inset, y: Tokens.statusBarInset, width: Tokens.statusBarWidth, height: Tokens.statusBarHeight))
-        progress.style = .bar; progress.isIndeterminate = true; progress.startAnimation(nil)
+        progress = StatusProgressView(frame: NSRect(x: Tokens.inset, y: Tokens.statusBarInset, width: Tokens.statusBarWidth, height: Tokens.statusBarHeight))
+        progress.style = .bar; progress.minValue = 0; progress.maxValue = 100; progress.isIndeterminate = true; progress.startAnimation(nil)
         progress.autoresizingMask = [.maxYMargin]; host.addSubview(progress)
         status.frame.origin.x = Tokens.inset + Tokens.statusBarWidth + Tokens.inset
         status.frame.size.width = host.bounds.width - status.frame.origin.x - Tokens.inset
@@ -311,7 +390,8 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             volumeFreeBytes = -1
             showError("Could not read free space for \(path): \(error.localizedDescription)")
         }
-        buildScanView(); isScanning = true
+        outline.reloadData(); types.reloadData(); mapView.layoutData = nil; mapView.selectedNode = nil; mapView.show([], width: 0, height: 0); mapView.clearPreview()
+        progress.isIndeterminate = true; progress.isHidden = false; progress.startAnimation(nil); isScanning = true
         window.title = "MacDiskStats — \(URL(fileURLWithPath: path).lastPathComponent)"
         status.stringValue = "Scanning \(path)…"
         scanTask = Task { [weak self] in
@@ -698,13 +778,21 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         let id = item == nil ? 0 : Int((item as? NSNumber)?.int32Value ?? 0)
         guard let tree else {
+            #if DEBUG
+            if snapshotMidRow && item == nil { return 1 }
+            #endif
             return liveRows[Int32(id)]?.count ?? 0
         }
         return Int(tree.childCount[id])
     }
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
         let id = item == nil ? 0 : Int((item as? NSNumber)?.int32Value ?? 0)
-        guard let tree else { return NSNumber(value: liveRows[Int32(id)]?[index].id ?? 0) }
+        guard let tree else {
+            #if DEBUG
+            if snapshotMidRow && item == nil { return NSNumber(value: -42) }
+            #endif
+            return NSNumber(value: liveRows[Int32(id)]?[index].id ?? 0)
+        }
         return NSNumber(value: tree.children[Int(tree.firstChild[id]) + index])
     }
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
@@ -714,6 +802,20 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let id = (item as? NSNumber)?.int32Value, let column = tableColumn else { return nil }
+        #if DEBUG
+        if snapshotMidRow && id == -42 {
+            let cell = cellView(in: outlineView, key: column.identifier.rawValue, right: column.identifier.rawValue != "Name")
+            switch column.identifier.rawValue {
+            case "Name": cell.textField?.stringValue = "Large folder"; cell.imageView?.image = folderIcon
+            case "Size":
+                cell.textField?.stringValue = "999.99 GB"
+                cell.subviews.compactMap { $0 as? NSProgressIndicator }.forEach { $0.isHidden = false; $0.startAnimation(nil) }
+            case "Frees": cell.textField?.stringValue = "999.99 GB"
+            default: cell.textField?.stringValue = "47.0%"
+            }
+            return cell
+        }
+        #endif
         let kind = column.identifier.rawValue
         let cell = cellView(in: outlineView, key: kind, right: kind != "Name")
         guard let tree else {
@@ -987,9 +1089,31 @@ final class MacDiskStatsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         }
         let volumeButtons = startView?.subviews.compactMap { $0 as? NSButton }.filter { $0.identifier?.rawValue == "/" || $0.identifier?.rawValue.hasPrefix("/Volumes/") == true } ?? []
         check("start screen lists disks", startView != nil && !volumeButtons.isEmpty)
+        if script == "start" {
+            check("bug: empty layout is present before scan", scanView != nil && outline.numberOfRows == 0 && types.numberOfRows == 0 && mapView.layoutData == nil && status.stringValue == "No scan yet")
+            check("bug: scan sheet is attached at launch", startSheet != nil && window.attachedSheet === startSheet && !volumePaths.isEmpty)
+            let cancelButton = startSheet?.contentView?.subviews.compactMap { $0 as? NSButton }.first { $0.title == "Cancel" }
+            if let cancelButton { NSApp.sendAction(cancelButton.action!, to: cancelButton.target, from: cancelButton) }
+            check("bug: cancel keeps empty layout", startSheet == nil && scanView != nil && outline.numberOfRows == 0 && status.stringValue == "No scan yet")
+            let newScanItem = NSApp.mainMenu?.items.first(where: { $0.submenu?.title == "File" })?.submenu?.item(withTitle: "New Scan")
+            if let newScanItem { NSApp.sendAction(newScanItem.action!, to: newScanItem.target, from: newScanItem) }
+            check("bug: New Scan reopens sheet", newScanItem?.keyEquivalent == "n" && startSheet != nil && window.attachedSheet === startSheet)
+            let originalHost = scanView
+            if let rootPath { volumePaths = [rootPath]; selectedVolume = 0; scanSelectedVolume() }
+            check("bug: sheet Scan keeps the same layout", startSheet == nil && isScanning && scanView === originalHost)
+            progress.isIndeterminate = false; progress.doubleValue = 47
+            check("bug: progress fill matches 47 percent", abs(progress.fillWidth - progress.bounds.width * 0.47) <= 2)
+            let sizeColumn = outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("Size"))
+            let cell = cellView(in: outline, key: "Size", right: true)
+            let textFits = ("999.99 GB" as NSString).size(withAttributes: [.font: Tokens.numberFont]).width <= cell.textField!.bounds.width
+            check("bug: large Size fits with spinner", (sizeColumn?.width ?? 0) >= 110 && textFits && cell.subviews.contains(where: { $0 is NSProgressIndicator }))
+            cancelScan()
+            print("e2e \(passed) passed, \(failed) failed"); fflush(stdout); NSApp.terminate(nil); return
+        }
         guard script == "fixture", let rootPath else {
             check("fixture script and path supplied", false); print("e2e \(passed) passed, \(failed) failed"); NSApp.terminate(nil); return
         }
+        closeStartSheet()
         startScan(rootPath)
         var sawLiveRows = false, sawSizing = false, liveFolder: Int32?
         for _ in 0..<200 {

@@ -32,13 +32,23 @@ import DiskCore
     static let mapFrameWidth: CGFloat = 2
     static let mapFrameInset: CGFloat = 1
     static let startSpacing: CGFloat = 14
+    static let sheetSize = NSSize(width: 460, height: 320)
+    static let sheetPadding: CGFloat = 24
+    static let sheetRowHeight: CGFloat = 44
+    static let sheetButtonWidth: CGFloat = 86
+    static let sheetButtonHeight: CGFloat = 32
+    static let sheetListTop: CGFloat = 226
+    static let sheetListHeight: CGFloat = 158
+    static let sheetIconSize: CGFloat = 28
+    static let sheetBarHeight: CGFloat = 3
+    static let sheetBarWidth: CGFloat = 310
     static let startRowHeight: CGFloat = 42
     static let startWidth: CGFloat = 620
     static let bannerTextFraction: CGFloat = 0.65
     static let bannerActionWidth: CGFloat = 126
     static let bannerCloseWidth: CGFloat = 42
-    static let treeColumns: [(String, CGFloat)] = [("Name", 330), ("Size", 80), ("Frees", 80), ("%", 56)]
-    static let typeColumns: [(String, CGFloat)] = [("Type", 190), ("Size", 80), ("%", 56)]
+    static let treeColumns: [(String, CGFloat)] = [("Name", 330), ("Size", 126), ("Frees", 112), ("%", 56)]
+    static let typeColumns: [(String, CGFloat)] = [("Type", 190), ("Size", 112), ("%", 56)]
     static let largestColumns: [(String, CGFloat)] = [("Path", 480), ("Size", 120)]
     static let startTopInset: CGFloat = 50
     static let paneMinRows: Int = 5
@@ -68,6 +78,9 @@ import DiskCore
     static func muted(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.70, alpha: 1) : NSColor(calibratedWhite: 0.39, alpha: 1) }
     static func separator(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.28, alpha: 1) : NSColor(calibratedWhite: 0.88, alpha: 1) }
     static func selection(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedRed: 0.22, green: 0.45, blue: 0.78, alpha: 1) : NSColor(calibratedRed: 0.04, green: 0.39, blue: 0.85, alpha: 1) }
+    static func sheetSelection(_ dark: Bool) -> NSColor { selection(dark).withAlphaComponent(dark ? 0.23 : 0.11) }
+    static func progressTrack(_ dark: Bool) -> NSColor { dark ? NSColor(calibratedWhite: 0.31, alpha: 1) : NSColor(calibratedWhite: 0.82, alpha: 1) }
+    static func progressFill(_ dark: Bool) -> NSColor { selection(dark) }
     static func frame(_ dark: Bool) -> NSColor { dark ? .white : .white }
     static func frameShadow(_ dark: Bool) -> NSColor { dark ? .black : NSColor(calibratedWhite: 0.0, alpha: 0.65) }
 

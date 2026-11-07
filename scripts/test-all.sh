@@ -19,6 +19,10 @@ finish() {
 scripts/build.sh debug > build/test-debug-build.log 2>&1
 record 'debug swiftc build' $?
 if (( fail == 0 )); then
+  Tests/test-start.sh > build/test-start-run.log 2>&1
+  startExit=$?
+  cat build/test-start-run.log
+  record 'start dialog window tests' "$startExit"
   scripts/test-icon.sh > build/test-icon.log 2>&1
   record 'icon generation' $?
   build/checks > build/test-unit.log 2>&1
