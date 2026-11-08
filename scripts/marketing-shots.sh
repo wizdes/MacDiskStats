@@ -1,6 +1,8 @@
 #!/bin/zsh
 set -euo pipefail
 scripts/build.sh debug
+# Shots show the whole window: title bar, rounded corners and shadow (see DebugSnapshot.wholeWindow).
+export MACDISKSTATS_SNAPSHOT_WINDOW=1
 fixture=build/tmp/marketing-sam
 shots=docs/shots
 mkdir -p "$shots" build/tmp
